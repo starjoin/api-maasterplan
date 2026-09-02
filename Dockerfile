@@ -2,15 +2,21 @@
 FROM node:22-bookworm-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY prisma ./prisma/
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src/
 COPY client ./client/
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
-RUN npm install && npm run build:deploy
+RUN chmod +x docker-entrypoint.sh \
+  && npm ci \
+  && npm run build:deploy \
+  && npm prune --omit=dev
 
 ENV NODE_ENV=production
 ENV DATABASE_URL=file:/app/data/maasterplan.db
@@ -22,7 +28,7 @@ VOLUME /app/data
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD node -e "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD curl -fsS http://localhost:3000/health || exit 1
 
-CMD ["sh", "-c", "prisma migrate deploy && node dist/index.js"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
