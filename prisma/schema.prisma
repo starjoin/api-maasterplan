@@ -1,0 +1,178 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Dataset metadata ─────────────────────────────────────────────────────────
+
+model DatasetMeta {
+  id           String    @id @default("default")
+  lastImport   DateTime?
+  rfuVersion   String?
+  rfuUpdatedAt String?
+  stats        String?   // JSON
+}
+
+// ─── Import Jobs ──────────────────────────────────────────────────────────────
+
+model ImportJob {
+  id           String    @id @default(cuid())
+  status       String    @default("PENDING") // PENDING | DOWNLOADING | PARSING | IMPORTING | COMPLETED | FAILED | SKIPPED
+  triggeredBy  String       @default("manual")
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+  stats        String?
+  logs         String       @default("[]")
+  createdAt    DateTime     @default(now())
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ─── GTFS Tables ──────────────────────────────────────────────────────────────
+
+model Agency {
+  id       String  @id @default(cuid())
+  agencyId String  @unique
+  name     String
+  url      String?
+  timezone String?
+  lang     String?
+  phone    String?
+  email    String?
+}
+
+model Stop {
+  id                 String  @id @default(cuid())
+  stopId             String  @unique
+  code               String?
+  name               String
+  desc               String?
+  lat                Float?
+  lon                Float?
+  zoneId             String?
+  url                String?
+  locationType       Int?
+  parentStation      String?
+  wheelchairBoarding Int?
+
+  @@index([name])
+}
+
+model Route {
+  id        String  @id @default(cuid())
+  routeId   String  @unique
+  agencyId  String?
+  shortName String?
+  longName  String?
+  desc      String?
+  type      Int
+  url       String?
+  color     String?
+  textColor String?
+  sortOrder Int?
+
+  @@index([shortName])
+  @@index([type])
+}
+
+model Trip {
+  id                   String  @id @default(cuid())
+  tripId               String  @unique
+  routeId              String
+  serviceId            String
+  headsign             String?
+  shortName            String?
+  directionId          Int?
+  blockId              String?
+  shapeId              String?
+  wheelchairAccessible Int?
+  bikesAllowed         Int?
+
+  @@index([routeId])
+  @@index([serviceId])
+}
+
+model StopTime {
+  id                String @id @default(cuid())
+  tripId            String
+  arrivalTime       String
+  departureTime     String
+  stopId            String
+  stopSequence      Int
+  headsign          String?
+  pickupType        Int?
+  dropOffType       Int?
+  shapeDistTraveled Float?
+  timepoint         Int?
+
+  @@index([tripId])
+  @@index([stopId])
+}
+
+model Calendar {
+  id        String @id @default(cuid())
+  serviceId String @unique
+  monday    Boolean
+  tuesday   Boolean
+  wednesday Boolean
+  thursday  Boolean
+  friday    Boolean
+  saturday  Boolean
+  sunday    Boolean
+  startDate String
+  endDate   String
+}
+
+model CalendarDate {
+  id            String @id @default(cuid())
+  serviceId     String
+  date          String
+  exceptionType Int
+
+  @@index([serviceId, date])
+}
+
+model Shape {
+  id           String @id @default(cuid())
+  shapeId      String
+  ptLat        Float
+  ptLon        Float
+  ptSequence   Int
+  distTraveled Float?
+
+  @@index([shapeId])
+}
+
+// ─── API Designer ─────────────────────────────────────────────────────────────
+
+model ApiEndpoint {
+  id             String     @id @default(cuid())
+  path           String
+  method         String     @default("GET")
+  description    String?
+  isActive       Boolean    @default(true)
+  responseSchema String
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  params         ApiParam[]
+
+  @@unique([path, method])
+}
+
+model ApiParam {
+  id           String      @id @default(cuid())
+  endpointId   String
+  endpoint     ApiEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  name         String
+  type         String      @default("string")
+  location     String
+  required     Boolean     @default(false)
+  description  String?
+  defaultValue String?
+}

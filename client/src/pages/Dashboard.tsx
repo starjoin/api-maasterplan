@@ -1,0 +1,158 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { api } from '../lib/api'
+import {
+  RefreshCw,
+  Loader2,
+  Route,
+  MapPin,
+  Bus,
+  Code2,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  SkipForward,
+} from 'lucide-react'
+
+const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof CheckCircle2 }> = {
+  COMPLETED: { label: 'Terminé', color: 'text-green-600', icon: CheckCircle2 },
+  FAILED: { label: 'Échoué', color: 'text-red-600', icon: XCircle },
+  SKIPPED: { label: 'Ignoré', color: 'text-gray-500', icon: SkipForward },
+  PENDING: { label: 'En attente', color: 'text-yellow-600', icon: Clock },
+  DOWNLOADING: { label: 'Téléchargement', color: 'text-blue-600', icon: Loader2 },
+  PARSING: { label: 'Parsing', color: 'text-blue-600', icon: Loader2 },
+  IMPORTING: { label: 'Import', color: 'text-blue-600', icon: Loader2 },
+}
+
+export default function Dashboard() {
+  const qc = useQueryClient()
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['dashboard'],
+    queryFn: api.dashboard.get,
+    refetchInterval: (q) => (q.state.data?.importRunning ? 3000 : 30_000),
+  })
+
+  const importMut = useMutation({
+    mutationFn: (force: boolean) => api.import.trigger(force),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
+      qc.invalidateQueries({ queryKey: ['import-status'] })
+    },
+  })
+
+  if (isLoading || !data) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="w-8 h-8 animate-spin text-primary-500" />
+      </div>
+    )
+  }
+
+  const stats = [
+    { label: 'Lignes', value: data.data.routes, icon: Route, color: 'bg-blue-50 text-blue-600' },
+    { label: 'Arrêts', value: data.data.stops, icon: MapPin, color: 'bg-green-50 text-green-600' },
+    { label: 'Courses', value: data.data.trips, icon: Bus, color: 'bg-purple-50 text-purple-600' },
+    { label: 'Endpoints actifs', value: data.endpoints.active, icon: Code2, color: 'bg-orange-50 text-orange-600' },
+  ]
+
+  return (
+    <div className="p-8 max-w-6xl">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <p className="text-sm text-gray-400 mt-1">
+            Données GTFS Sytral Mobilités via le RFU Enroute
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            className="btn-secondary"
+            disabled={data.importRunning || importMut.isPending}
+            onClick={() => importMut.mutate(false)}
+          >
+            {data.importRunning ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
+            )}
+            Synchroniser RFU
+          </button>
+          <button
+            className="btn-ghost border border-gray-200"
+            disabled={data.importRunning || importMut.isPending}
+            onClick={() => importMut.mutate(true)}
+            title="Forcer le re-téléchargement même si les données n'ont pas changé"
+          >
+            Forcer
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        {stats.map(({ label, value, icon: Icon, color }) => (
+          <div key={label} className="card p-5">
+            <div className={`w-10 h-10 rounded-lg flex items-center justify-center mb-3 ${color}`}>
+              <Icon className="w-5 h-5" />
+            </div>
+            <p className="text-2xl font-bold">{value.toLocaleString('fr-FR')}</p>
+            <p className="text-sm text-gray-400">{label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-6">
+          <h2 className="font-semibold mb-4">Source RFU</h2>
+          <dl className="space-y-3 text-sm">
+            <div>
+              <dt className="text-gray-400">Dernière synchro</dt>
+              <dd className="font-medium">
+                {data.data.lastImport
+                  ? new Date(data.data.lastImport).toLocaleString('fr-FR')
+                  : 'Jamais importé'}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-400">Version RFU</dt>
+              <dd className="font-mono text-xs">{data.rfu.version ?? '—'}</dd>
+            </div>
+            <div>
+              <dt className="text-gray-400">Mis à jour RFU</dt>
+              <dd className="font-mono text-xs">{data.rfu.updatedAt ?? '—'}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="card p-6">
+          <h2 className="font-semibold mb-4">Imports récents</h2>
+          {data.jobs.recent.length === 0 ? (
+            <p className="text-sm text-gray-400">Aucun import pour l'instant</p>
+          ) : (
+            <ul className="space-y-3">
+              {data.jobs.recent.map((job) => {
+                const s = STATUS_LABELS[job.status] ?? STATUS_LABELS.PENDING
+                const Icon = s.icon
+                return (
+                  <li key={job.id} className="flex items-center gap-3 text-sm">
+                    <Icon className={`w-4 h-4 flex-shrink-0 ${s.color} ${job.status.includes('ING') ? 'animate-spin' : ''}`} />
+                    <span className="flex-1 truncate text-gray-600">
+                      {new Date(job.createdAt).toLocaleString('fr-FR')}
+                    </span>
+                    <span className={`badge bg-gray-100 ${s.color}`}>{s.label}</span>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {data.data.routes > 0 && (
+        <div className="mt-6 p-4 bg-primary-50 border border-primary-200 rounded-lg text-sm text-primary-800">
+          API prête — essayez{' '}
+          <code className="font-mono bg-white px-2 py-0.5 rounded border">GET /api/v1/lignes</code>
+        </div>
+      )}
+    </div>
+  )
+}
