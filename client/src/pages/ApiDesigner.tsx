@@ -119,7 +119,8 @@ export default function ApiDesigner() {
             <code className="font-mono">/api{endpoints[0].path}</code>
             <br />
             <span className="text-xs text-primary-600">
-              Rechargement à chaud — pas besoin de redémarrer le serveur.
+              Rechargement à chaud — la documentation (<code className="font-mono">/docs</code> et page
+              Documentation) se met à jour automatiquement.
             </span>
           </div>
         </div>

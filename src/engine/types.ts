@@ -36,4 +36,6 @@ export interface ResponseSchema {
   relations?: RelationDef[]
   orderBy?: { field: string; direction: 'asc' | 'desc' }
   paginate?: boolean
+  /** Marqueur pour les endpoints documentés mais servis par la couche SAE native */
+  native?: string
 }

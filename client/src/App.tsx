@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import ApiDesigner from './pages/ApiDesigner'
 import EndpointEditor from './pages/EndpointEditor'
 import Explorer from './pages/Explorer'
+import Documentation from './pages/Documentation'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="api-designer" element={<ApiDesigner />} />
           <Route path="api-designer/new" element={<EndpointEditor />} />
           <Route path="api-designer/:id" element={<EndpointEditor />} />
+          <Route path="documentation" element={<Documentation />} />
         </Route>
       </Routes>
     </BrowserRouter>

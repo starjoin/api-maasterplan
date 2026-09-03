@@ -6,6 +6,7 @@ import { config } from './config.js'
 import { endpointsRoutes } from './admin/endpoints.js'
 import { dashboardRoutes, exploreRoutes, importRoutes } from './admin/routes.js'
 import { saeRoutes } from './sae/routes.js'
+import { docsRoutes } from './docs/routes.js'
 import { registerDynamicApiHandler } from './engine/index.js'
 
 export async function buildServer() {
@@ -31,7 +32,9 @@ export async function buildServer() {
       if (
         !req.url.startsWith('/admin') &&
         !req.url.startsWith('/api') &&
-        !req.url.startsWith('/health')
+        !req.url.startsWith('/health') &&
+        !req.url.startsWith('/docs') &&
+        !req.url.startsWith('/openapi')
       ) {
         return reply.sendFile('index.html')
       }
@@ -45,6 +48,7 @@ export async function buildServer() {
   await app.register(importRoutes)
   await app.register(exploreRoutes)
   await app.register(endpointsRoutes)
+  await app.register(docsRoutes)
 
   // SAE natif (Navitia-like) AVANT le catch-all dynamique
   await app.register(saeRoutes)
