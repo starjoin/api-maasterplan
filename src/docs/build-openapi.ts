@@ -41,51 +41,52 @@ export async function buildOpenApiDocument(serverUrl?: string) {
   }
 
   for (const ep of endpoints) {
-    // Les endpoints SAE natifs documentés dans le Designer ne doublonnent pas les paths SAE déjà définis
-    if (ep.responseSchema.native === 'sae') {
+    // Les endpoints avec preset sont réellement exécutés par le moteur dynamique
+    if (ep.responseSchema.preset) {
       const converted = designerEndpointToOperation(ep)
       catalog.push({
-        group: 'SAE (natif)',
+        group: 'SAE (preset Designer)',
         method: ep.method,
         path: converted.openApiPath,
         summary: converted.operation.summary,
         description: converted.operation.description,
-        active: true,
-        source: 'sae',
+        active: ep.isActive,
+        source: 'designer-preset',
         parameters: converted.operation.parameters,
         example: converted.meta.example,
         curl: converted.meta.curl,
         designerId: ep.id,
       })
-      continue
+      // Continuer pour aussi enregistrer le path OpenAPI via la boucle normale
     }
 
     const { openApiPath, method, operation, meta } = designerEndpointToOperation(ep)
 
     if (!paths[openApiPath]) paths[openApiPath] = {}
-    // Ne pas écraser une op SAE existante sur le même path
     if (!paths[openApiPath][method]) {
       paths[openApiPath][method] = operation
     }
 
-    catalog.push({
-      group: meta.native ? 'SAE (natif)' : ep.path.startsWith('/v1/custom') ? 'Designer (custom)' : 'Designer',
-      method: ep.method,
-      path: openApiPath,
-      summary: operation.summary,
-      description: meta.explanation,
-      active: ep.isActive,
-      source: 'designer',
-      entity: meta.entity,
-      parameters: operation.parameters,
-      example: meta.example,
-      curl: meta.curl,
-      designerId: ep.id,
-      updatedAt: ep.updatedAt,
-    })
+    if (!ep.responseSchema.preset) {
+      catalog.push({
+        group: ep.path.startsWith('/v1/custom') ? 'Designer (déclaratif)' : 'Designer',
+        method: ep.method,
+        path: openApiPath,
+        summary: operation.summary,
+        description: meta.explanation,
+        active: ep.isActive,
+        source: 'designer',
+        entity: meta.entity,
+        parameters: operation.parameters,
+        example: meta.example,
+        curl: meta.curl,
+        designerId: ep.id,
+        updatedAt: ep.updatedAt,
+      })
+    }
   }
 
-  // Enrichir le catalogue avec les paths SAE non listés dans le Designer
+  // Compléter avec la spec SAE OpenAPI enrichie (exemples) si absente du Designer
   for (const [path, methods] of Object.entries(SAE_OPENAPI_PATHS)) {
     for (const [method, op] of Object.entries(methods)) {
       const operation = op as {
@@ -135,12 +136,12 @@ export async function buildOpenApiDocument(serverUrl?: string) {
         '',
         '## Sources de la documentation',
         '',
-        'Cette spécification OpenAPI est **générée dynamiquement** à chaque requête à partir de :',
+        'Cette spécification OpenAPI est **générée dynamiquement** à partir de l’**API Designer** :',
         '',
-        '1. La **couche SAE native** (`/api/v1/lines`, `places`, `places_nearby`, thermomètre, tracés…)',
-        '2. Les endpoints configurés dans l’**API Designer** (moteur déclaratif)',
+        '1. Endpoints **preset SAE** (lignes Navitia, places, nearby, thermomètre…)',
+        '2. Endpoints **déclaratifs GTFS** (projection libre champs / filtres)',
         '',
-        'Toute création / modification / activation dans le Designer se reflète immédiatement ici.',
+        'Activer, désactiver ou projeter des champs dans le Designer change l’API et cette doc.',
         '',
         '## Conventions',
         '',
@@ -165,18 +166,17 @@ export async function buildOpenApiDocument(serverUrl?: string) {
     ],
     tags: [
       {
-        name: 'SAE (natif)',
+        name: 'SAE (preset Designer)',
         description:
-          'Endpoints métier optimisés (lignes, horaires, thermomètre, nearby, POI…). Implémentation native TypeScript.',
+          'Endpoints métier (Navitia-like) pilotés par un preset dans l’API Designer — activation et projection des clés inclus.',
       },
       {
-        name: 'Designer (custom)',
-        description:
-          'Endpoints créés / personnalisés via l’API Designer. Exécutés par le moteur déclaratif GTFS.',
+        name: 'Designer (déclaratif)',
+        description: 'Endpoints créés via projection GTFS libre (entité, champs, filtres).',
       },
       {
         name: 'Designer',
-        description: 'Autres endpoints déclaratifs issus du Designer.',
+        description: 'Autres endpoints déclaratifs.',
       },
       {
         name: 'Système',

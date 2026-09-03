@@ -83,6 +83,37 @@ export default function EndpointEditor() {
     queryFn: api.endpoints.fields,
   })
 
+  const { data: presetsData } = useQuery({
+    queryKey: ['endpoint-presets'],
+    queryFn: api.endpoints.presets,
+  })
+  const presets = presetsData?.presets ?? []
+  const selectedPreset = presets.find((p) => p.id === schema.preset)
+  const engineMode: 'declarative' | 'preset' = schema.preset ? 'preset' : 'declarative'
+
+  const setEngineMode = (mode: 'declarative' | 'preset') => {
+    if (mode === 'declarative') {
+      setSchema((s) => ({
+        entity: s.entity,
+        multiple: s.multiple,
+        filters: s.filters ?? [],
+        fields: s.fields ?? [],
+        orderBy: s.orderBy,
+        paginate: s.paginate,
+      }))
+    } else {
+      const first = presets[0]
+      setSchema((s) => ({
+        ...s,
+        preset: first?.id ?? 'lines_list',
+        entity: first?.entity ?? 'Route',
+        multiple: first?.multiple ?? true,
+        fields: [],
+        responseKeys: [],
+      }))
+    }
+  }
+
   useEffect(() => {
     if (existing) {
       setPath(existing.path)
@@ -235,6 +266,148 @@ export default function EndpointEditor() {
 
         <div className="card p-5 mb-5">
           <h2 className="font-semibold mb-1">
+            Moteur de réponse
+            <Help text="Déclaratif = projection GTFS libre. Preset = handler SAE (Navitia) dont vous pilotez l’activation, les params et les clés de réponse." />
+          </h2>
+          <p className="text-xs text-gray-400 mb-4">
+            Ce qui est configuré ici est exactement ce que sert <code className="font-mono">/api{path}</code> une
+            fois l’endpoint actif.
+          </p>
+          <div className="flex gap-2 mb-4">
+            <button
+              type="button"
+              className={`btn text-sm ${engineMode === 'declarative' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setEngineMode('declarative')}
+            >
+              Déclaratif GTFS
+            </button>
+            <button
+              type="button"
+              className={`btn text-sm ${engineMode === 'preset' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setEngineMode('preset')}
+            >
+              Preset SAE / Navitia
+            </button>
+          </div>
+
+          {engineMode === 'preset' && (
+            <div className="space-y-4">
+              <div>
+                <label className="label">Preset</label>
+                <select
+                  className="input"
+                  value={schema.preset ?? ''}
+                  onChange={(e) => {
+                    const p = presets.find((x) => x.id === e.target.value)
+                    setSchema((s) => ({
+                      ...s,
+                      preset: e.target.value,
+                      entity: p?.entity ?? s.entity,
+                      multiple: p?.multiple ?? s.multiple,
+                      responseKeys: [],
+                    }))
+                    if (p?.pathHint && (isNew || path === '/v1/')) setPath(p.pathHint)
+                  }}
+                >
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label} ({p.id})
+                    </option>
+                  ))}
+                </select>
+                {selectedPreset && (
+                  <p className="text-xs text-gray-500 mt-2">{selectedPreset.description}</p>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="label mb-0">
+                    Clés de réponse
+                    <Help text="Cochez les clés JSON à conserver. Aucune case = réponse complète du preset. Pour la liste de lignes, utilisez aussi line.code, line.routes…" />
+                  </label>
+                  <button
+                    type="button"
+                    className="text-xs text-primary-700"
+                    onClick={() =>
+                      setSchema((s) => ({
+                        ...s,
+                        responseKeys: [],
+                      }))
+                    }
+                  >
+                    Tout inclure
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 max-h-56 overflow-auto p-3 bg-gray-50 rounded-lg border border-gray-100">
+                  {(selectedPreset?.responseKeys ?? []).map((key) => {
+                    const checked = (schema.responseKeys ?? []).includes(key)
+                    const hasProjection = (schema.responseKeys ?? []).length > 0
+                    return (
+                      <label key={key} className="flex items-center gap-2 text-xs font-mono cursor-pointer">
+                        <input
+                          type="checkbox"
+                          className="w-3.5 h-3.5"
+                          checked={!hasProjection || checked}
+                          onChange={() => {
+                            setSchema((s) => {
+                              const current = s.responseKeys ?? []
+                              if (current.length === 0) {
+                                // passer en mode projection : tout sauf cette clé décochée
+                                const all = selectedPreset?.responseKeys ?? []
+                                return { ...s, responseKeys: all.filter((k) => k !== key) }
+                              }
+                              if (checked) {
+                                const next = current.filter((k) => k !== key)
+                                return { ...s, responseKeys: next }
+                              }
+                              return { ...s, responseKeys: [...current, key] }
+                            })
+                          }}
+                        />
+                        {key}
+                      </label>
+                    )
+                  })}
+                  {schema.preset === 'lines_list' && (
+                    <>
+                      <p className="col-span-2 text-[10px] uppercase tracking-wide text-gray-400 mt-2">
+                        Projection items lines[]
+                      </p>
+                      {['id', 'code', 'name', 'color', 'text_color', 'commercial_mode', 'physical_modes', 'network', 'routes', 'geojson', 'opening_time', 'closing_time'].map(
+                        (k) => {
+                          const key = `line.${k}`
+                          const checked = (schema.responseKeys ?? []).includes(key)
+                          return (
+                            <label key={key} className="flex items-center gap-2 text-xs font-mono cursor-pointer">
+                              <input
+                                type="checkbox"
+                                className="w-3.5 h-3.5"
+                                checked={checked}
+                                onChange={() => {
+                                  setSchema((s) => {
+                                    const current = s.responseKeys ?? []
+                                    if (checked) return { ...s, responseKeys: current.filter((x) => x !== key) }
+                                    return { ...s, responseKeys: [...current, key] }
+                                  })
+                                }}
+                              />
+                              {key}
+                            </label>
+                          )
+                        },
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {engineMode === 'declarative' && (
+        <div className="card p-5 mb-5">
+          <h2 className="font-semibold mb-1">
             Entité principale
             <Help text="Le type de données GTFS que l'endpoint retourne." />
           </h2>
@@ -319,7 +492,9 @@ export default function EndpointEditor() {
             )}
           </div>
         </div>
+        )}
 
+        {engineMode === 'declarative' && (
         <div className="card p-5 mb-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold">Champs de réponse</h2>
@@ -361,7 +536,9 @@ export default function EndpointEditor() {
             ))}
           </div>
         </div>
+        )}
 
+        {engineMode === 'declarative' && (
         <div className="card p-5 mb-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold">Filtres</h2>
@@ -420,10 +597,14 @@ export default function EndpointEditor() {
             ))}
           </div>
         </div>
+        )}
 
         <div className="card p-5 mb-6">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold">Paramètres déclarés</h2>
+            <h2 className="font-semibold">
+              Paramètres
+              <Help text="Documentés et utilisés dans le formulaire de preview. Pour les presets, ce sont les query/path réellement lus par le handler." />
+            </h2>
             <button className="btn-secondary text-xs py-1" onClick={addParam}>
               <Plus className="w-3 h-3" /> Ajouter
             </button>

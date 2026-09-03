@@ -103,9 +103,9 @@ export function buildItemExample(schema: ResponseSchema): Record<string, unknown
   return out
 }
 
-export function buildResponseExample(schema: ResponseSchema): unknown {
-  if (schema.native === 'sae') {
-    return { note: 'Voir les exemples SAE natifs dans la section correspondante.' }
+export function buildResponseExample(schema: ResponseSchema & { native?: string }): unknown {
+  if (schema.native === 'sae' || schema.preset) {
+    return { note: 'Réponse générée par le preset SAE configuré dans l’API Designer.' }
   }
   const item = buildItemExample(schema)
   if (!schema.multiple) return item
@@ -118,9 +118,9 @@ export function buildResponseExample(schema: ResponseSchema): unknown {
   return [item]
 }
 
-export function buildJsonSchemaFromFields(schema: ResponseSchema): JsonSchema {
-  if (schema.native === 'sae') {
-    return { type: 'object', description: 'Réponse native SAE (structure riche, voir exemples).' }
+export function buildJsonSchemaFromFields(schema: ResponseSchema & { native?: string }): JsonSchema {
+  if (schema.native === 'sae' || schema.preset) {
+    return { type: 'object', description: 'Réponse SAE / preset (structure riche, voir exemples).' }
   }
 
   const properties: Record<string, JsonSchema> = {}
@@ -177,10 +177,15 @@ function explainEndpoint(ep: DesignerEndpoint): string {
 
   if (ep.description) parts.push(ep.description)
 
-  if (schema.native === 'sae') {
+  if (schema.native === 'sae' || schema.preset) {
     parts.push(
-      'Cet endpoint est servi par la **couche SAE native** (optimisée). La configuration Designer sert de documentation ; la logique métier n’est pas le moteur déclaratif.',
+      schema.preset
+        ? `Cet endpoint est piloté par le **preset SAE** \`${schema.preset}\` depuis l’API Designer (activation, params, projection \`responseKeys\`).`
+        : 'Cet endpoint est servi par un preset SAE.',
     )
+    if (schema.responseKeys?.length) {
+      parts.push(`**Projection :** ${schema.responseKeys.map((k) => `\`${k}\``).join(', ')}.`)
+    }
     return parts.join('\n\n')
   }
 
@@ -262,7 +267,11 @@ function buildCurlExample(method: string, path: string, params: DesignerEndpoint
 
 export function designerEndpointToOperation(ep: DesignerEndpoint) {
   const schema = ep.responseSchema
-  const tag = schema.native === 'sae' ? 'SAE (natif)' : ep.path.startsWith('/v1/custom') ? 'Designer (custom)' : 'Designer'
+  const tag = schema.preset
+    ? 'SAE (preset Designer)'
+    : ep.path.startsWith('/v1/custom')
+      ? 'Designer (déclaratif)'
+      : 'Designer'
   const pathParams = detectPathParams(ep.path)
 
   const parameters: Array<Record<string, unknown>> = []

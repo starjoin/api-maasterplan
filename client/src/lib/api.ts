@@ -59,6 +59,20 @@ export interface ResponseSchema {
   relations?: RelationDef[]
   orderBy?: { field: string; direction: 'asc' | 'desc' }
   paginate?: boolean
+  /** Preset SAE — si défini, pilote un handler nommé */
+  preset?: string
+  /** Projection des clés de réponse (presets) */
+  responseKeys?: string[]
+}
+
+export interface PresetMeta {
+  id: string
+  label: string
+  description: string
+  responseKeys: string[]
+  entity: string
+  multiple: boolean
+  pathHint: string
 }
 
 export interface FilterDef {
@@ -112,6 +126,7 @@ export const api = {
     delete: (id: string) => request<void>(`/admin/endpoints/${id}`, { method: 'DELETE' }),
     toggle: (id: string) => request<ApiEndpoint>(`/admin/endpoints/${id}/toggle`, { method: 'PATCH' }),
     fields: () => request<Record<string, string[]>>('/admin/endpoints/meta/fields'),
+    presets: () => request<{ presets: PresetMeta[] }>('/admin/endpoints/meta/presets'),
     preview: (schema: ResponseSchema, pathParams: Record<string, string>, queryParams: Record<string, string>) =>
       request<{ ok: boolean; result: unknown; error?: string }>('/admin/endpoints/preview', {
         method: 'POST',

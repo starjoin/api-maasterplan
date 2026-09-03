@@ -1,5 +1,6 @@
 import { prisma } from '../db.js'
 import type { ResponseSchema, FieldMapping, GtfsEntity } from './types.js'
+import { resolvePreset } from './presets.js'
 
 type AnyRecord = Record<string, unknown>
 
@@ -19,6 +20,11 @@ export async function resolveEndpoint(
   pathParams: AnyRecord,
   queryParams: AnyRecord,
 ): Promise<unknown> {
+  // ── Preset SAE piloté par le Designer ─────────────────────────────────────
+  if (schema.preset) {
+    return resolvePreset(schema, pathParams, queryParams)
+  }
+
   const where = buildWhere(schema, pathParams, queryParams)
   const select = schema.fields.length > 0 ? buildSelect(schema.fields) : undefined
   const orderBy = schema.orderBy ? { [schema.orderBy.field]: schema.orderBy.direction } : undefined

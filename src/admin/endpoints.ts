@@ -128,6 +128,11 @@ export async function endpointsRoutes(app: FastifyInstance) {
     })
   })
 
+  app.get('/admin/endpoints/meta/presets', async (_req, reply) => {
+    const { PRESET_CATALOG } = await import('../engine/presets.js')
+    return reply.send({ presets: PRESET_CATALOG })
+  })
+
   app.post<{
     Body: {
       schema: ResponseSchema
