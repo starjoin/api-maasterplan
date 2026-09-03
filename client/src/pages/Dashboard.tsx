@@ -148,9 +148,21 @@ export default function Dashboard() {
       </div>
 
       {data.data.routes > 0 && (
-        <div className="mt-6 p-4 bg-primary-50 border border-primary-200 rounded-lg text-sm text-primary-800">
-          API prête — essayez{' '}
-          <code className="font-mono bg-white px-2 py-0.5 rounded border">GET /api/v1/lignes</code>
+        <div className="mt-6 p-4 bg-primary-50 border border-primary-200 rounded-lg text-sm text-primary-800 space-y-2">
+          <p>
+            API SAE prête —{' '}
+            <code className="font-mono bg-white px-2 py-0.5 rounded border">GET /api/v1/endpoints</code>
+          </p>
+          <p className="text-xs text-primary-700">
+            Exemples :{' '}
+            <code className="font-mono">/api/v1/lines</code>
+            {' · '}
+            <code className="font-mono">/api/v1/places?q=part</code>
+            {' · '}
+            <code className="font-mono">/api/v1/places_nearby?lat=45.76&lon=4.83</code>
+            {' · '}
+            <code className="font-mono">/api/v1/lignes/:id/thermometre</code>
+          </p>
         </div>
       )}
     </div>

@@ -62,6 +62,8 @@ model Stop {
   wheelchairBoarding Int?
 
   @@index([name])
+  @@index([lat, lon])
+  @@index([locationType])
 }
 
 model Route {

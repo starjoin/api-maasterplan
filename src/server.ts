@@ -5,6 +5,7 @@ import path from 'node:path'
 import { config } from './config.js'
 import { endpointsRoutes } from './admin/endpoints.js'
 import { dashboardRoutes, exploreRoutes, importRoutes } from './admin/routes.js'
+import { saeRoutes } from './sae/routes.js'
 import { registerDynamicApiHandler } from './engine/index.js'
 
 export async function buildServer() {
@@ -44,6 +45,9 @@ export async function buildServer() {
   await app.register(importRoutes)
   await app.register(exploreRoutes)
   await app.register(endpointsRoutes)
+
+  // SAE natif (Navitia-like) AVANT le catch-all dynamique
+  await app.register(saeRoutes)
   await registerDynamicApiHandler(app)
 
   app.get('/health', async () => ({

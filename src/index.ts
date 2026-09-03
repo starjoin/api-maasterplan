@@ -5,11 +5,8 @@ import { startScheduler } from './scheduler/index.js'
 import { syncGtfs } from './gtfs/sync.js'
 import { seedDefaultEndpoints } from './seed.js'
 
-async function seedIfNeeded() {
-  const count = await prisma.apiEndpoint.count()
-  if (count > 0) return
-
-  console.log('[Seed] Initialisation des endpoints par défaut...')
+async function seedCatalog() {
+  console.log('[Seed] Synchronisation du catalogue SAE / Designer...')
   await seedDefaultEndpoints(prisma)
 }
 
@@ -18,7 +15,7 @@ async function main() {
   await prisma.$connect()
   console.log('[DB] Connecté (SQLite WAL)')
 
-  await seedIfNeeded()
+  await seedCatalog()
 
   const app = await buildServer()
   startScheduler(app)
