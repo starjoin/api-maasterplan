@@ -97,13 +97,36 @@ export async function importRoutes(app: FastifyInstance) {
 }
 
 export async function exploreRoutes(app: FastifyInstance) {
+  app.get('/admin/explore/route-modes', async (_req, reply) => {
+    const counts = await prisma.route.groupBy({ by: ['type'], _count: true, orderBy: { type: 'asc' } })
+    const labels: Record<number, string> = {
+      0: 'Tram',
+      1: 'Métro',
+      2: 'Train',
+      3: 'Bus',
+      4: 'Ferry',
+      5: 'Téléphérique',
+      6: 'Téléphérique',
+      7: 'Funiculaire',
+      11: 'Trolleybus',
+      12: 'Monorail',
+    }
+    return reply.send({
+      modes: counts.map((c) => ({
+        type: c.type,
+        label: labels[c.type] ?? `Type ${c.type}`,
+        count: c._count,
+      })),
+    })
+  })
+
   app.get('/admin/explore/routes', async (req, reply) => {
     const q = req.query as { q?: string; limit?: string; offset?: string; type?: string }
     const limit = Math.min(parseInt(q.limit ?? '50', 10), 200)
-    const offset = parseInt(q.offset ?? '0', 10)
+    const offset = Math.max(parseInt(q.offset ?? '0', 10) || 0, 0)
 
     const where: Record<string, unknown> = {}
-    if (q.type) where.type = parseInt(q.type, 10)
+    if (q.type !== undefined && q.type !== '') where.type = parseInt(q.type, 10)
     if (q.q) {
       where.OR = [
         { shortName: { contains: q.q } },
@@ -113,17 +136,29 @@ export async function exploreRoutes(app: FastifyInstance) {
     }
 
     const [items, total] = await Promise.all([
-      prisma.route.findMany({ where, take: limit, skip: offset, orderBy: { sortOrder: 'asc' } }),
+      prisma.route.findMany({
+        where,
+        take: limit,
+        skip: offset,
+        orderBy: [{ sortOrder: 'asc' }, { shortName: 'asc' }],
+      }),
       prisma.route.count({ where }),
     ])
 
-    return reply.send({ items, total, limit, offset })
+    return reply.send({
+      items,
+      total,
+      limit,
+      offset,
+      page: Math.floor(offset / limit) + 1,
+      pages: Math.max(Math.ceil(total / limit), 1),
+    })
   })
 
   app.get('/admin/explore/stops', async (req, reply) => {
     const q = req.query as { q?: string; limit?: string; offset?: string }
     const limit = Math.min(parseInt(q.limit ?? '50', 10), 200)
-    const offset = parseInt(q.offset ?? '0', 10)
+    const offset = Math.max(parseInt(q.offset ?? '0', 10) || 0, 0)
 
     const where = q.q
       ? { OR: [{ name: { contains: q.q } }, { stopId: { contains: q.q } }] }
@@ -134,6 +169,13 @@ export async function exploreRoutes(app: FastifyInstance) {
       prisma.stop.count({ where }),
     ])
 
-    return reply.send({ items, total, limit, offset })
+    return reply.send({
+      items,
+      total,
+      limit,
+      offset,
+      page: Math.floor(offset / limit) + 1,
+      pages: Math.max(Math.ceil(total / limit), 1),
+    })
   })
 }

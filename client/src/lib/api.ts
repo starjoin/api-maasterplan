@@ -120,20 +120,36 @@ export const api = {
   },
 
   explore: {
+    routeModes: () =>
+      request<{ modes: Array<{ type: number; label: string; count: number }> }>('/admin/explore/route-modes'),
     routes: (p: { q?: string; limit?: number; offset?: number; type?: number }) => {
       const q = new URLSearchParams()
       if (p.q) q.set('q', p.q)
       if (p.limit) q.set('limit', String(p.limit))
       if (p.offset) q.set('offset', String(p.offset))
       if (p.type !== undefined) q.set('type', String(p.type))
-      return request<{ items: Record<string, unknown>[]; total: number }>(`/admin/explore/routes?${q}`)
+      return request<{
+        items: Record<string, unknown>[]
+        total: number
+        limit: number
+        offset: number
+        page: number
+        pages: number
+      }>(`/admin/explore/routes?${q}`)
     },
     stops: (p: { q?: string; limit?: number; offset?: number }) => {
       const q = new URLSearchParams()
       if (p.q) q.set('q', p.q)
       if (p.limit) q.set('limit', String(p.limit))
       if (p.offset) q.set('offset', String(p.offset))
-      return request<{ items: Record<string, unknown>[]; total: number }>(`/admin/explore/stops?${q}`)
+      return request<{
+        items: Record<string, unknown>[]
+        total: number
+        limit: number
+        offset: number
+        page: number
+        pages: number
+      }>(`/admin/explore/stops?${q}`)
     },
   },
 }
