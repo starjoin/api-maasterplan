@@ -1,6 +1,7 @@
 import { prisma } from '../db.js'
 import { getDatasetStats } from '../gtfs/sync.js'
 import { gtfsTypesForModeId, hexColor, modeFromGtfsType, PHYSICAL_MODES } from './modes.js'
+import { buildNavitiaLine, buildNavitiaLines } from './line-navitia.js'
 
 type Query = Record<string, string | undefined>
 
@@ -157,16 +158,22 @@ export async function listLines(q: Query) {
     prisma.route.count({ where }),
   ])
 
+  // Même structure Navitia que le détail. geojson=false pour alléger si besoin.
+  const includeGeojson = q.geojson !== 'false'
+  const lines = await buildNavitiaLines(rows, { includeGeojson })
+
   return {
-    lines: rows.map(formatLine),
+    lines,
     pagination: { total, limit, offset, hasMore: offset + limit < total },
   }
 }
 
-export async function getLine(routeId: string) {
+export async function getLine(routeId: string, q: Query = {}) {
   const row = await prisma.route.findUnique({ where: { routeId } })
   if (!row) return null
-  return { line: formatLine(row) }
+  const includeGeojson = q.geojson !== 'false'
+  // Navitia renvoie l'objet ligne à la racine (pas enveloppe { line })
+  return buildNavitiaLine(row, { includeGeojson })
 }
 
 /** Thermomètre : séquence d'arrêts d'une ligne (par direction) */

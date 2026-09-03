@@ -97,23 +97,47 @@ export const SAE_OPENAPI_PATHS: Record<string, Record<string, unknown>> = {
   '/api/v1/lines': {
     get: {
       tags: ['SAE (natif)'],
-      summary: 'Liste des lignes',
+      summary: 'Liste des lignes (format Navitia)',
       description:
-        'Liste paginée des lignes commerciales. Filtres : `physical_mode`, `type` (GTFS), `q` (recherche), `agency_id`. Alias FR : `/api/v1/lignes`.',
+        'Liste paginée des lignes au format Navitia : `code`, `commercial_mode`, `physical_modes`, `network`, `routes` (inbound/outbound), `opening_time` / `closing_time`, `geojson`, `codes`, `properties`.\n\nFiltres : `physical_mode`, `type`, `q`, `agency_id`. Passez `geojson=false` pour alléger la réponse.\n\nAlias FR : `/api/v1/lignes`.',
       operationId: 'listLines',
       parameters: [
         { name: 'physical_mode', in: 'query', schema: { type: 'string' }, example: 'Bus', description: 'Filtrer par mode' },
-        { name: 'q', in: 'query', schema: { type: 'string' }, example: 'C1', description: 'Recherche libre' },
+        { name: 'q', in: 'query', schema: { type: 'string' }, example: 'TB11', description: 'Recherche libre' },
+        { name: 'geojson', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'true' }, description: 'Inclure les tracés GeoJSON' },
         { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 }, example: 20 },
         { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
       ],
       responses: {
         '200': {
-          description: 'Lignes',
+          description: 'Lignes format Navitia',
           content: {
             'application/json': {
               example: {
-                lines: [{ id: '82', code: 'C1', name: 'Gorge de Loup ↔ Cuire', color: '#E4002B' }],
+                lines: [
+                  {
+                    id: 'line:TB11',
+                    code: 'TB11',
+                    name: 'Gare Saint-Paul - Laurent Bonnevay',
+                    color: 'FDC300',
+                    text_color: '000000',
+                    opening_time: '045000',
+                    closing_time: '012800',
+                    commercial_mode: { id: 'commercial_mode:Trambus', name: 'Trambus' },
+                    physical_modes: [
+                      {
+                        id: 'physical_mode:Tramway',
+                        name: 'Tramway',
+                        co2_emission_rate: { unit: 'gCO₂e/passenger-km', value: 5 },
+                      },
+                    ],
+                    network: { id: 'network:TCL', name: 'TCL' },
+                    routes: [
+                      { id: 'route:TB11-outbound', direction_type: 'outbound', name: 'Gare Saint-Paul - Laurent Bonnevay' },
+                      { id: 'route:TB11-inbound', direction_type: 'inbound', name: 'Laurent Bonnevay - Gare Saint-Paul' },
+                    ],
+                  },
+                ],
                 pagination: { total: 795, limit: 20, offset: 0, hasMore: true },
               },
             },
@@ -121,32 +145,62 @@ export const SAE_OPENAPI_PATHS: Record<string, Record<string, unknown>> = {
         },
       },
       'x-codeSamples': [
-        { lang: 'cURL', source: 'curl -sS "https://api.example.com/api/v1/lines?physical_mode=Bus&limit=10"' },
+        { lang: 'cURL', source: 'curl -sS "https://api.example.com/api/v1/lines?q=TB11&limit=5"' },
       ],
     },
   },
   '/api/v1/lines/{id}': {
     get: {
       tags: ['SAE (natif)'],
-      summary: 'Détail d’une ligne',
-      description: 'Retourne le détail d’une ligne par son `route_id` GTFS. Alias FR : `/api/v1/lignes/{id}`.',
+      summary: 'Détail d’une ligne (format Navitia)',
+      description:
+        'Objet ligne Navitia à la racine (pas d’enveloppe `{ line }`) : modes commerciaux/physiques, réseau, horaires d’ouverture/fermeture, directions `routes[]` avec terminus et GeoJSON.\n\nAlias FR : `/api/v1/lignes/{id}`.',
       operationId: 'getLine',
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string' }, example: '82' },
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' }, example: 'TB11', description: 'route_id GTFS' },
+        { name: 'geojson', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'true' } },
       ],
       responses: {
         '200': {
-          description: 'Ligne',
+          description: 'Ligne format Navitia',
           content: {
             'application/json': {
               example: {
-                line: {
-                  id: '82',
-                  code: 'C1',
-                  name: 'Gorge de Loup ↔ Cuire',
-                  physical_mode: { id: 'Bus', name: 'Bus' },
-                  color: '#E4002B',
-                },
+                id: 'line:A',
+                code: 'A',
+                name: 'Perrache - Vaulx-en-Velin La Soie',
+                color: 'E8308A',
+                text_color: 'FFFFFF',
+                opening_time: '043500',
+                closing_time: '021720',
+                commercial_mode: { id: 'commercial_mode:Métro', name: 'Métro' },
+                physical_modes: [
+                  {
+                    id: 'physical_mode:Métro',
+                    name: 'Métro',
+                    co2_emission_rate: { unit: 'gCO₂e/passenger-km', value: 3.5 },
+                  },
+                ],
+                network: { id: 'network:TCL', name: 'TCL', codes: [] },
+                routes: [
+                  {
+                    id: 'route:A-outbound',
+                    direction_type: 'outbound',
+                    name: 'Perrache - Vaulx-en-Velin La Soie',
+                    is_frequence: 'False',
+                    geojson: { type: 'FeatureCollection', features: [] },
+                  },
+                  {
+                    id: 'route:A-inbound',
+                    direction_type: 'inbound',
+                    name: 'Vaulx-en-Velin La Soie - Perrache',
+                    is_frequence: 'False',
+                  },
+                ],
+                geojson: { type: 'FeatureCollection', features: [] },
+                codes: [{ type: 'gtfs_id', value: 'A' }],
+                links: [],
+                properties: [],
               },
             },
           },

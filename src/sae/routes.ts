@@ -29,12 +29,12 @@ export async function saeRoutes(app: FastifyInstance) {
   })
 
   app.get<{ Params: { id: string } }>('/api/v1/lines/:id', async (req, reply) => {
-    const result = await sae.getLine(req.params.id)
+    const result = await sae.getLine(req.params.id, req.query as Q)
     if (!result) return reply.status(404).send({ error: 'Ligne introuvable' })
     return reply.send(result)
   })
   app.get<{ Params: { id: string } }>('/api/v1/lignes/:id', async (req, reply) => {
-    const result = await sae.getLine(req.params.id)
+    const result = await sae.getLine(req.params.id, req.query as Q)
     if (!result) return reply.status(404).send({ error: 'Ligne introuvable' })
     return reply.send(result)
   })
