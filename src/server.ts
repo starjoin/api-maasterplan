@@ -13,6 +13,7 @@ import {
 } from './admin/routes.js'
 import { docsRoutes } from './docs/routes.js'
 import { registerDynamicApiHandler } from './engine/index.js'
+import { getStorageStatus } from './storage.js'
 
 export async function buildServer() {
   const app = Fastify({
@@ -60,11 +61,18 @@ export async function buildServer() {
   // Un seul moteur : tout ce qui est actif dans l’API Designer
   await registerDynamicApiHandler(app)
 
-  app.get('/health', async () => ({
-    status: 'ok',
-    service: 'api-maasterplan',
-    ts: new Date().toISOString(),
-  }))
+  app.get('/health', async () => {
+    const storage = getStorageStatus()
+    return {
+      status: 'ok',
+      service: 'api-maasterplan',
+      ts: new Date().toISOString(),
+      storage: {
+        volumeMounted: storage.volumeMounted,
+        warning: storage.warning,
+      },
+    }
+  })
 
   return app
 }

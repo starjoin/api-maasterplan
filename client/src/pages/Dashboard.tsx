@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   XCircle,
   SkipForward,
+  AlertTriangle,
+  HardDrive,
 } from 'lucide-react'
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof CheckCircle2 }> = {
@@ -146,6 +148,46 @@ export default function Dashboard() {
 
       {data.importRunning && progress && progress.phase !== 'idle' && (
         <DownloadProgressBlock progress={progress} />
+      )}
+
+      {data.storage?.warning && (
+        <div className="mb-6 p-4 rounded-lg border border-amber-200 bg-amber-50 text-amber-950">
+          <div className="flex gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="space-y-2 text-sm min-w-0">
+              <p className="font-semibold">Données non persistantes</p>
+              <p>{data.storage.warning}</p>
+              <ol className="list-decimal list-inside space-y-1 text-amber-900/90">
+                <li>Coolify → cette application → Storages (ou Persistent Storage)</li>
+                <li>
+                  Add → Name <code className="font-mono text-xs bg-amber-100 px-1 rounded">maasterplan-data</code>
+                </li>
+                <li>
+                  Destination Path{' '}
+                  <code className="font-mono text-xs bg-amber-100 px-1 rounded">/app/data</code>
+                </li>
+                <li>Sauvegarder, redéployer, puis relancer un import GTFS/NeTEx</li>
+              </ol>
+              {data.storage.files.length > 0 && (
+                <p className="text-xs text-amber-800/80 flex items-center gap-1.5 pt-1">
+                  <HardDrive className="w-3.5 h-3.5" />
+                  Fichiers actuels :{' '}
+                  {data.storage.files.map((f) => `${f.name} (${f.sizeLabel})`).join(', ')}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!data.storage?.warning && data.storage && (
+        <p className="mb-4 text-xs text-gray-400 flex items-center gap-1.5">
+          <HardDrive className="w-3.5 h-3.5" />
+          Stockage {data.storage.volumeMounted ? 'persistant' : 'local'} · {data.storage.dataDir}
+          {data.storage.files.length > 0
+            ? ` · ${data.storage.files.map((f) => f.name).join(', ')}`
+            : ' · (vide)'}
+        </p>
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

@@ -140,6 +140,16 @@ export const api = {
         jobs: { recent: ImportJob[]; stats: Record<string, number> }
         importRunning: boolean
         downloadProgress?: DownloadProgress
+        storage?: {
+          dataDir: string
+          volumeMounted: boolean
+          exists: boolean
+          writable: boolean
+          files: Array<{ name: string; sizeBytes: number; sizeLabel: string }>
+          hasGtfsDb: boolean
+          hasNetexDb: boolean
+          warning: string | null
+        }
       }>('/admin/dashboard'),
   },
 

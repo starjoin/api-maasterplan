@@ -33,6 +33,7 @@ import {
   vehicleMonitoringStatus,
 } from '../siri/handlers.js'
 import { refreshVehicleMonitoring } from '../siri/vehicle-monitoring.js'
+import { getStorageStatus, logStorageStatus } from '../storage.js'
 
 function serializeProgress(p: ReturnType<typeof getDownloadProgress>) {
   return {
@@ -92,6 +93,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       jobs: { recent: recentJobs, stats: jobStats },
       importRunning: isImportRunning(),
       downloadProgress: serializeProgress(getDownloadProgress()),
+      storage: getStorageStatus(),
       realtime: {
         enabled: config.SIRI_VM_ENABLED,
         pollMs: config.SIRI_VM_POLL_MS,

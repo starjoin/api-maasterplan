@@ -1,3 +1,6 @@
+# Volume nommé : obligatoire pour garder GTFS/NeTEx entre redéploiements.
+# Sur Coolify (Dockerfile) : ajouter un Storage Destination Path = /app/data
+# Sur Coolify (Compose) : ce volume `maasterplan_data` suffit.
 services:
   api:
     build: .

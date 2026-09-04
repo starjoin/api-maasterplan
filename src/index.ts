@@ -14,8 +14,10 @@ import { syncDataset } from './gtfs/sync.js'
 import { seedDefaultEndpoints } from './seed.js'
 import { startVehicleMonitoringPoller } from './siri/vehicle-monitoring.js'
 import { listenDynamic } from './net/listen.js'
+import { logStorageStatus } from './storage.js'
 
 async function main() {
+  logStorageStatus()
   for (const source of DATA_SOURCES) {
     await ensureSourceDatabase(source)
   }
