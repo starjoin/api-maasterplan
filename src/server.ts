@@ -4,7 +4,13 @@ import staticFiles from '@fastify/static'
 import path from 'node:path'
 import { config } from './config.js'
 import { endpointsRoutes } from './admin/endpoints.js'
-import { dashboardRoutes, exploreRoutes, importRoutes } from './admin/routes.js'
+import {
+  dashboardRoutes,
+  exploreRoutes,
+  importRoutes,
+  realtimeRoutes,
+  sourceRoutes,
+} from './admin/routes.js'
 import { docsRoutes } from './docs/routes.js'
 import { registerDynamicApiHandler } from './engine/index.js'
 
@@ -44,8 +50,10 @@ export async function buildServer() {
   }
 
   await app.register(dashboardRoutes)
+  await app.register(sourceRoutes)
   await app.register(importRoutes)
   await app.register(exploreRoutes)
+  await app.register(realtimeRoutes)
   await app.register(endpointsRoutes)
   await app.register(docsRoutes)
 

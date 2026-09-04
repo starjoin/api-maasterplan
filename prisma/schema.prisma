@@ -7,14 +7,15 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// ─── Dataset metadata ─────────────────────────────────────────────────────────
+// ─── Dataset metadata (id = "gtfs" | "netex") ────────────────────────────────
 
 model DatasetMeta {
-  id           String    @id @default("default")
+  id           String    @id // gtfs | netex
   lastImport   DateTime?
   rfuVersion   String?
   rfuUpdatedAt String?
-  stats        String?   // JSON
+  stats        String? // JSON
+  format       String? // gtfs | netex
 }
 
 // ─── Import Jobs ──────────────────────────────────────────────────────────────
@@ -22,19 +23,21 @@ model DatasetMeta {
 model ImportJob {
   id           String    @id @default(cuid())
   status       String    @default("PENDING") // PENDING | DOWNLOADING | PARSING | IMPORTING | COMPLETED | FAILED | SKIPPED
-  triggeredBy  String       @default("manual")
+  triggeredBy  String    @default("manual")
+  source       String    @default("gtfs") // gtfs | netex
   startedAt    DateTime?
   completedAt  DateTime?
   errorMessage String?
   stats        String?
-  logs         String       @default("[]")
-  createdAt    DateTime     @default(now())
+  logs         String    @default("[]")
+  createdAt    DateTime  @default(now())
 
   @@index([status])
   @@index([createdAt])
+  @@index([source])
 }
 
-// ─── GTFS Tables ──────────────────────────────────────────────────────────────
+// ─── GTFS / NeTEx normalized tables ───────────────────────────────────────────
 
 model Agency {
   id       String  @id @default(cuid())
@@ -60,6 +63,7 @@ model Stop {
   locationType       Int?
   parentStation      String?
   wheelchairBoarding Int?
+  extras             String? // JSON (NeTEx enrichments)
 
   @@index([name])
   @@index([lat, lon])
@@ -78,6 +82,7 @@ model Route {
   color     String?
   textColor String?
   sortOrder Int?
+  extras    String? // JSON (NeTEx enrichments)
 
   @@index([shortName])
   @@index([type])
@@ -118,8 +123,8 @@ model StopTime {
 }
 
 model Calendar {
-  id        String @id @default(cuid())
-  serviceId String @unique
+  id        String  @id @default(cuid())
+  serviceId String  @unique
   monday    Boolean
   tuesday   Boolean
   wednesday Boolean
@@ -141,7 +146,7 @@ model CalendarDate {
 }
 
 model Shape {
-  id           String @id @default(cuid())
+  id           String  @id @default(cuid())
   shapeId      String
   ptLat        Float
   ptLon        Float
@@ -149,6 +154,49 @@ model Shape {
   distTraveled Float?
 
   @@index([shapeId])
+}
+
+// ─── Tarifs / correspondances (GTFS fare_* / transfers + NeTEx FareZone) ──────
+
+model FareZone {
+  id      String  @id @default(cuid())
+  zoneId  String  @unique
+  name    String?
+  extras  String? // JSON (communes, projections…)
+}
+
+model FareAttribute {
+  id               String  @id @default(cuid())
+  fareId           String  @unique
+  price            Float?
+  currencyType     String?
+  paymentMethod    Int?
+  transfers        Int?
+  transferDuration Int?
+  extras           String?
+}
+
+model FareRule {
+  id            String  @id @default(cuid())
+  fareId        String
+  routeId       String?
+  originId      String?
+  destinationId String?
+  containsId    String?
+
+  @@index([fareId])
+  @@index([routeId])
+}
+
+model Transfer {
+  id              String @id @default(cuid())
+  fromStopId      String
+  toStopId        String
+  transferType    Int
+  minTransferTime Int?
+
+  @@index([fromStopId])
+  @@index([toStopId])
 }
 
 // ─── API Designer ─────────────────────────────────────────────────────────────

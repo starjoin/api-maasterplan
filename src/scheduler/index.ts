@@ -1,7 +1,8 @@
 import cron from 'node-cron'
 import type { FastifyInstance } from 'fastify'
 import { config } from '../config.js'
-import { syncGtfs } from '../gtfs/sync.js'
+import { syncDataset } from '../gtfs/sync.js'
+import { getActiveSource } from '../db.js'
 
 export function startScheduler(app: FastifyInstance) {
   if (!cron.validate(config.IMPORT_CRON)) {
@@ -10,9 +11,9 @@ export function startScheduler(app: FastifyInstance) {
   }
 
   cron.schedule(config.IMPORT_CRON, () => {
-    app.log.info('[Scheduler] Import GTFS planifié démarré')
-    syncGtfs('scheduler').catch((err) => {
-      app.log.error(err, '[Scheduler] Import GTFS échoué')
+    app.log.info(`[Scheduler] Import ${getActiveSource()} planifié démarré`)
+    syncDataset('scheduler').catch((err) => {
+      app.log.error(err, '[Scheduler] Import échoué')
     })
   })
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { Search, Loader2, Route, MapPin, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -8,15 +9,64 @@ const ROUTE_TYPES: Record<number, string> = {
   1: 'Métro',
   2: 'Train',
   3: 'Bus',
-  4: 'Ferry',
+  4: 'Navigône',
   5: 'Téléphérique',
   6: 'Téléphérique',
   7: 'Funiculaire',
-  11: 'Trolleybus',
+  11: 'Chrono',
   12: 'Monorail',
+  200: 'Cars région',
 }
 
 const PAGE_SIZE = 50
+
+const STOP_TYPE_LABELS: Record<number, string> = {
+  0: 'Arrêt (stop_point)',
+  1: 'Zone d’arrêts (stop_area)',
+  2: 'Entrée / sortie',
+  3: 'POI',
+  4: 'Zone d’embarquement',
+  [-1]: 'Non renseigné',
+}
+
+function stopTypeLabel(locationType: unknown): string {
+  if (locationType == null) return STOP_TYPE_LABELS[-1]
+  const n = Number(locationType)
+  return STOP_TYPE_LABELS[n] ?? `Type ${n}`
+}
+
+function LinePicto({
+  code,
+  color,
+  picto,
+}: {
+  code: string
+  color?: string | null
+  picto?: string | null
+}) {
+  const [failed, setFailed] = useState(false)
+  const bg = color ? `#${String(color).replace(/^#/, '')}` : undefined
+
+  if (picto && !failed) {
+    return (
+      <img
+        src={picto}
+        alt={`Ligne ${code}`}
+        className="w-10 h-10 object-contain flex-shrink-0"
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+
+  return (
+    <span
+      className="w-10 h-10 rounded-lg flex items-center justify-center text-xs font-bold text-white flex-shrink-0 bg-gray-300"
+      style={bg ? { backgroundColor: bg } : undefined}
+    >
+      {code || '?'}
+    </span>
+  )
+}
 
 function Pagination({
   page,
@@ -102,11 +152,17 @@ function Pagination({
 }
 
 export default function Explorer() {
+  const navigate = useNavigate()
   const [tab, setTab] = useState<'routes' | 'stops'>('routes')
   const [q, setQ] = useState('')
   const [search, setSearch] = useState('')
   const [modeType, setModeType] = useState<number | null>(null)
+  const [commercial, setCommercial] = useState<string | null>(null)
+  const [stopType, setStopType] = useState<number | null>(null)
+  const [poiClass, setPoiClass] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+
+  const showPoiCategories = tab === 'stops' && (stopType === 3 || stopType === null)
 
   const { data: modesData } = useQuery({
     queryKey: ['explore-route-modes'],
@@ -114,29 +170,53 @@ export default function Explorer() {
     enabled: tab === 'routes',
   })
 
+  const { data: commercialData } = useQuery({
+    queryKey: ['explore-commercial-modes', modeType],
+    queryFn: () => api.explore.commercialModes({ type: modeType ?? undefined }),
+    enabled: tab === 'routes',
+  })
+
+  const { data: stopTypesData } = useQuery({
+    queryKey: ['explore-stop-types'],
+    queryFn: api.explore.stopTypes,
+    enabled: tab === 'stops',
+  })
+
+  const { data: poiCategoriesData } = useQuery({
+    queryKey: ['explore-poi-categories'],
+    queryFn: api.explore.poiCategories,
+    enabled: showPoiCategories,
+  })
+
   const offset = (page - 1) * PAGE_SIZE
+  const effectivePoiClass = stopType === 3 || (stopType === null && poiClass) ? poiClass : null
 
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: ['explore', tab, search, modeType, page],
+    queryKey: ['explore', tab, search, modeType, commercial, stopType, effectivePoiClass, page],
     queryFn: () =>
       tab === 'routes'
         ? api.explore.routes({
             q: search || undefined,
             type: modeType ?? undefined,
+            commercial: commercial ?? undefined,
             limit: PAGE_SIZE,
             offset,
           })
         : api.explore.stops({
             q: search || undefined,
+            locationType: effectivePoiClass ? 3 : (stopType ?? undefined),
+            classification: effectivePoiClass ?? undefined,
+            poiOnly: Boolean(effectivePoiClass),
             limit: PAGE_SIZE,
             offset,
           }),
-    placeholderData: (prev) => prev,
+    placeholderData: (prev, previousQuery) =>
+      previousQuery?.queryKey?.[1] === tab ? prev : undefined,
   })
 
   useEffect(() => {
     setPage(1)
-  }, [tab, search, modeType])
+  }, [tab, search, modeType, commercial, stopType, poiClass])
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault()
@@ -146,11 +226,22 @@ export default function Explorer() {
   const handleTab = (next: 'routes' | 'stops') => {
     setTab(next)
     setModeType(null)
+    setCommercial(null)
+    setStopType(null)
+    setPoiClass(null)
+    setPage(1)
   }
 
   const total = data?.total ?? 0
   const pages = data?.pages ?? Math.max(Math.ceil(total / PAGE_SIZE), 1)
   const currentPage = data?.page ?? page
+  const commercialLabel = commercialData?.modes.find((m) => m.key === commercial)?.name
+  const stopTypeActiveLabel =
+    stopType !== null ? stopTypesData?.types.find((t) => t.locationType === stopType)?.label : null
+  const poiClassLabel = poiCategoriesData?.categories.find((c) => c.key === effectivePoiClass)?.name
+
+  const hasFilters =
+    search || modeType !== null || commercial || stopType !== null || effectivePoiClass !== null
 
   return (
     <div className="p-8">
@@ -170,7 +261,7 @@ export default function Explorer() {
           className={`btn ${tab === 'stops' ? 'btn-primary' : 'btn-secondary'}`}
           onClick={() => handleTab('stops')}
         >
-          <MapPin className="w-4 h-4" /> Arrêts
+          <MapPin className="w-4 h-4" /> Arrêts / POI
         </button>
       </div>
 
@@ -179,7 +270,7 @@ export default function Explorer() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             className="input pl-9"
-            placeholder={tab === 'routes' ? 'Rechercher une ligne…' : 'Rechercher un arrêt…'}
+            placeholder={tab === 'routes' ? 'Rechercher une ligne…' : 'Rechercher un arrêt / POI…'}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -187,7 +278,7 @@ export default function Explorer() {
         <button type="submit" className="btn-secondary">
           Rechercher
         </button>
-        {(search || modeType !== null) && (
+        {hasFilters && (
           <button
             type="button"
             className="btn-ghost"
@@ -195,6 +286,9 @@ export default function Explorer() {
               setQ('')
               setSearch('')
               setModeType(null)
+              setCommercial(null)
+              setStopType(null)
+              setPoiClass(null)
             }}
           >
             Réinitialiser
@@ -203,38 +297,181 @@ export default function Explorer() {
       </form>
 
       {tab === 'routes' && (
-        <div className="flex flex-wrap gap-2 mb-6">
-          <button
-            type="button"
-            onClick={() => setModeType(null)}
-            className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
-              modeType === null
-                ? 'bg-primary-600 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            Tous
-            {modesData && (
-              <span className="ml-1 opacity-80">
-                ({modesData.modes.reduce((s, m) => s + m.count, 0).toLocaleString('fr-FR')})
-              </span>
-            )}
-          </button>
-          {(modesData?.modes ?? []).map((m) => (
-            <button
-              key={m.type}
-              type="button"
-              onClick={() => setModeType(m.type)}
-              className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
-                modeType === m.type
-                  ? 'bg-primary-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              {m.label}
-              <span className="ml-1 opacity-80">({m.count.toLocaleString('fr-FR')})</span>
-            </button>
-          ))}
+        <div className="mb-6 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Mode physique</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setModeType(null)
+                  setCommercial(null)
+                }}
+                className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                  modeType === null
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Tous
+                {modesData && (
+                  <span className="ml-1 opacity-80">
+                    ({modesData.modes.reduce((s, m) => s + m.count, 0).toLocaleString('fr-FR')})
+                  </span>
+                )}
+              </button>
+              {(modesData?.modes ?? []).map((m) => (
+                <button
+                  key={m.type}
+                  type="button"
+                  onClick={() => {
+                    setModeType(m.type)
+                    setCommercial(null)
+                  }}
+                  className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                    modeType === m.type
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {m.label}
+                  <span className="ml-1 opacity-80">({m.count.toLocaleString('fr-FR')})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {(commercialData?.modes?.length ?? 0) > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">
+                Mode commercial (sous-mode)
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCommercial(null)}
+                  className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                    commercial === null
+                      ? 'bg-emerald-700 text-white'
+                      : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                  }`}
+                >
+                  Tous les sous-modes
+                  {commercialData && (
+                    <span className="ml-1 opacity-80">
+                      ({commercialData.total.toLocaleString('fr-FR')})
+                    </span>
+                  )}
+                </button>
+                {(commercialData?.modes ?? []).map((m) => (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setCommercial(m.key)}
+                    className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                      commercial === m.key
+                        ? 'bg-emerald-700 text-white'
+                        : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                    }`}
+                  >
+                    {m.name}
+                    <span className="ml-1 opacity-80">({m.count.toLocaleString('fr-FR')})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'stops' && (
+        <div className="mb-6 space-y-3">
+          <div>
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">Type</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setStopType(null)
+                  setPoiClass(null)
+                }}
+                className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                  stopType === null
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Tous
+                {stopTypesData && (
+                  <span className="ml-1 opacity-80">
+                    ({stopTypesData.types.reduce((s, t) => s + t.count, 0).toLocaleString('fr-FR')})
+                  </span>
+                )}
+              </button>
+              {(stopTypesData?.types ?? []).map((t) => (
+                <button
+                  key={t.locationType}
+                  type="button"
+                  onClick={() => {
+                    setStopType(t.locationType)
+                    if (t.locationType !== 3) setPoiClass(null)
+                  }}
+                  className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                    stopType === t.locationType
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  {t.label}
+                  <span className="ml-1 opacity-80">({t.count.toLocaleString('fr-FR')})</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {(stopType === 3 || stopType === null) && (poiCategoriesData?.categories.length ?? 0) > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-2">
+                Catégorie POI (Vélo’v, parking, bornes…)
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPoiClass(null)}
+                  className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                    poiClass === null
+                      ? 'bg-violet-700 text-white'
+                      : 'bg-violet-50 text-violet-800 hover:bg-violet-100'
+                  }`}
+                >
+                  Toutes les catégories
+                  {poiCategoriesData && (
+                    <span className="ml-1 opacity-80">
+                      ({poiCategoriesData.total.toLocaleString('fr-FR')})
+                    </span>
+                  )}
+                </button>
+                {(poiCategoriesData?.categories ?? []).map((c) => (
+                  <button
+                    key={c.key}
+                    type="button"
+                    onClick={() => {
+                      setStopType(3)
+                      setPoiClass(c.key)
+                    }}
+                    className={`badge px-3 py-1.5 text-xs cursor-pointer transition-colors ${
+                      poiClass === c.key
+                        ? 'bg-violet-700 text-white'
+                        : 'bg-violet-50 text-violet-800 hover:bg-violet-100'
+                    }`}
+                  >
+                    {c.name}
+                    <span className="ml-1 opacity-80">({c.count.toLocaleString('fr-FR')})</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -244,7 +481,7 @@ export default function Explorer() {
         </div>
       ) : !data?.items.length ? (
         <div className="card p-12 text-center text-gray-400">
-          {search || modeType !== null
+          {hasFilters
             ? 'Aucun résultat pour ces filtres'
             : 'Aucune donnée — lancez un import depuis le Dashboard'}
         </div>
@@ -258,6 +495,21 @@ export default function Explorer() {
                   · mode <strong>{ROUTE_TYPES[modeType] ?? `Type ${modeType}`}</strong>
                 </span>
               )}
+              {commercialLabel && (
+                <span className="ml-1">
+                  · sous-mode <strong>{commercialLabel}</strong>
+                </span>
+              )}
+              {stopTypeActiveLabel && (
+                <span className="ml-1">
+                  · type <strong>{stopTypeActiveLabel}</strong>
+                </span>
+              )}
+              {poiClassLabel && (
+                <span className="ml-1">
+                  · catégorie <strong>{poiClassLabel}</strong>
+                </span>
+              )}
               {isFetching && <Loader2 className="inline w-3.5 h-3.5 ml-2 animate-spin text-primary-500" />}
             </p>
             <p className="text-xs text-gray-400">
@@ -267,45 +519,79 @@ export default function Explorer() {
 
           <div className="card divide-y divide-gray-100">
             {tab === 'routes'
-              ? data.items.map((r) => (
-                  <div key={String(r.routeId)} className="px-5 py-3 flex items-center gap-4">
-                    {r.color ? (
-                      <span
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
-                        style={{ backgroundColor: `#${String(r.color).replace(/^#/, '')}` }}
+              ? data.items
+                  .filter((r) => r.routeId != null)
+                  .map((r) => {
+                    const routeId = String(r.routeId)
+                    const shortName = String(r.shortName ?? '')
+                    const commercialName =
+                      (r.commercialMode as { name?: string } | undefined)?.name ??
+                      ROUTE_TYPES[Number(r.type)]
+                    const netexSubmode =
+                      typeof r.netexSubmode === 'string' ? r.netexSubmode : null
+                    return (
+                      <button
+                        key={routeId}
+                        type="button"
+                        className="w-full text-left px-5 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors"
+                        onClick={() => navigate(`/explorer/lines/${encodeURIComponent(routeId)}`)}
                       >
-                        {String(r.shortName ?? '')}
-                      </span>
-                    ) : (
-                      <span className="w-8 h-8 rounded-lg bg-gray-200 flex items-center justify-center text-xs font-bold flex-shrink-0">
-                        {String(r.shortName ?? '?')}
-                      </span>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">
-                        {String(r.longName ?? r.shortName ?? r.routeId)}
-                      </p>
-                      <p className="text-xs text-gray-400 font-mono">{String(r.routeId)}</p>
-                    </div>
-                    <span className="badge bg-gray-100 text-gray-600">
-                      {ROUTE_TYPES[Number(r.type)] ?? `Type ${r.type}`}
-                    </span>
-                  </div>
-                ))
-              : data.items.map((s) => (
-                  <div key={String(s.stopId)} className="px-5 py-3 flex items-center gap-4">
-                    <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{String(s.name)}</p>
-                      <p className="text-xs text-gray-400 font-mono">{String(s.stopId)}</p>
-                    </div>
-                    {s.lat != null && s.lon != null && (
-                      <span className="text-xs text-gray-400 font-mono">
-                        {Number(s.lat).toFixed(5)}, {Number(s.lon).toFixed(5)}
-                      </span>
-                    )}
-                  </div>
-                ))}
+                        <LinePicto
+                          code={shortName}
+                          color={r.color as string | null}
+                          picto={r.pictoUrl as string | null}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">
+                            {String(r.longName ?? r.shortName ?? r.routeId)}
+                          </p>
+                          <p className="text-xs text-gray-400 font-mono">{routeId}</p>
+                        </div>
+                        {netexSubmode && (
+                          <span className="badge bg-amber-50 text-amber-800" title="Sous-mode NeTEx">
+                            {netexSubmode}
+                          </span>
+                        )}
+                        <span className="badge bg-emerald-50 text-emerald-800">{commercialName}</span>
+                        <span className="badge bg-gray-100 text-gray-600">
+                          {ROUTE_TYPES[Number(r.type)] ?? `Type ${r.type}`}
+                        </span>
+                      </button>
+                    )
+                  })
+              : data.items
+                  .filter((s) => s.stopId != null)
+                  .map((s) => {
+                    const stopId = String(s.stopId)
+                    const classification =
+                      typeof s.classification === 'string' ? s.classification : null
+                    const isPoi = Boolean(s.isPoi) || Number(s.locationType) === 3
+                    return (
+                      <button
+                        key={stopId}
+                        type="button"
+                        className="w-full text-left px-5 py-3 flex items-center gap-4 hover:bg-gray-50 transition-colors"
+                        onClick={() => navigate(`/explorer/stops/${encodeURIComponent(stopId)}`)}
+                      >
+                        <MapPin className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{String(s.name ?? 'Sans nom')}</p>
+                          <p className="text-xs text-gray-400 font-mono">{stopId}</p>
+                        </div>
+                        {isPoi && classification && (
+                          <span className="badge bg-violet-50 text-violet-800">{classification}</span>
+                        )}
+                        <span className={`badge ${isPoi ? 'bg-amber-50 text-amber-800' : 'bg-sky-50 text-sky-800'}`}>
+                          {isPoi ? 'POI' : stopTypeLabel(s.locationType)}
+                        </span>
+                        {s.lat != null && s.lon != null && (
+                          <span className="text-xs text-gray-400 font-mono">
+                            {Number(s.lat).toFixed(5)}, {Number(s.lon).toFixed(5)}
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
           </div>
 
           <Pagination

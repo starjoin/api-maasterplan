@@ -95,22 +95,71 @@ export interface RelationDef {
   fields: FieldMapping[]
 }
 
+export type DataSource = 'gtfs' | 'netex'
+
+export interface SourceInfo {
+  id: DataSource
+  label: string
+  active: boolean
+  zipUrl: string
+  lastImport: string | null
+  rfuVersion: string | null
+  counts: { routes: number; stops: number; trips: number }
+}
+
+export interface DownloadProgress {
+  phase: 'idle' | 'downloading' | 'extracting' | 'parsing' | 'importing'
+  percent: number | null
+  bytesReceived: number
+  bytesTotal: number | null
+  speedBps: number | null
+  etaSeconds: number | null
+  bytesLabel: string | null
+  speedLabel: string | null
+  etaLabel: string | null
+}
+
 export const api = {
+  source: {
+    get: () =>
+      request<{ active: DataSource; sources: SourceInfo[] }>('/admin/source'),
+    set: (source: DataSource) =>
+      request<{ active: DataSource; label: string; message: string }>('/admin/source', {
+        method: 'POST',
+        body: JSON.stringify({ source }),
+      }),
+  },
+
   dashboard: {
     get: () =>
       request<{
+        source?: { active: DataSource; label: string }
         rfu: { gtfsUrl: string; infoUrl: string; version?: string; updatedAt?: string }
         data: { routes: number; stops: number; trips: number; agencies: number; lastImport?: string }
         endpoints: { active: number }
         jobs: { recent: ImportJob[]; stats: Record<string, number> }
         importRunning: boolean
+        downloadProgress?: DownloadProgress
       }>('/admin/dashboard'),
   },
 
   import: {
     trigger: (force = false) =>
-      request<{ message: string }>(`/admin/import/trigger?force=${force}`, { method: 'POST' }),
-    status: () => request<{ running: boolean; latest?: ImportJob }>('/admin/import/status'),
+      request<{ message: string; source?: string }>(`/admin/import/trigger?force=${force}`, {
+        method: 'POST',
+      }),
+    netexLocal: (path: string) =>
+      request<{ message: string }>('/admin/import/netex-local', {
+        method: 'POST',
+        body: JSON.stringify({ path }),
+      }),
+    status: () =>
+      request<{
+        running: boolean
+        latest?: ImportJob
+        source?: string
+        downloadProgress?: DownloadProgress
+      }>('/admin/import/status'),
     jobs: (limit = 20) => request<ImportJob[]>(`/admin/import/jobs?limit=${limit}`),
     getJob: (id: string) => request<ImportJob & { logs: string[] }>(`/admin/import/jobs/${id}`),
     rfuInfo: () => request<Record<string, unknown>>('/admin/rfu/info'),
@@ -137,12 +186,34 @@ export const api = {
   explore: {
     routeModes: () =>
       request<{ modes: Array<{ type: number; label: string; count: number }> }>('/admin/explore/route-modes'),
-    routes: (p: { q?: string; limit?: number; offset?: number; type?: number }) => {
+    commercialModes: (p?: { type?: number }) => {
+      const q = new URLSearchParams()
+      if (p?.type !== undefined) q.set('type', String(p.type))
+      const qs = q.toString()
+      return request<{
+        modes: Array<{
+          key: string
+          id: string
+          name: string
+          count: number
+          physicalTypes: number[]
+        }>
+        total: number
+      }>(`/admin/explore/commercial-modes${qs ? `?${qs}` : ''}`)
+    },
+    routes: (p: {
+      q?: string
+      limit?: number
+      offset?: number
+      type?: number
+      commercial?: string
+    }) => {
       const q = new URLSearchParams()
       if (p.q) q.set('q', p.q)
       if (p.limit) q.set('limit', String(p.limit))
       if (p.offset) q.set('offset', String(p.offset))
       if (p.type !== undefined) q.set('type', String(p.type))
+      if (p.commercial) q.set('commercial', p.commercial)
       return request<{
         items: Record<string, unknown>[]
         total: number
@@ -152,11 +223,51 @@ export const api = {
         pages: number
       }>(`/admin/explore/routes?${q}`)
     },
-    stops: (p: { q?: string; limit?: number; offset?: number }) => {
+    route: (id: string) =>
+      request<{
+        route: Record<string, unknown>
+        line: Record<string, unknown>
+        thermometer: {
+          line: Record<string, unknown>
+          directions: Array<{
+            direction_id: number | null
+            headsign: string | null
+            shape_id: string | null
+            trip_id: string
+            stop_points: Array<{
+              order: number
+              stop_point: { id?: string; name?: string; label?: string }
+              arrival_time: string | null
+              departure_time: string | null
+            }>
+          }>
+        } | null
+        pictoUrl: string | null
+      }>(`/admin/explore/routes/${encodeURIComponent(id)}`),
+    stopTypes: () =>
+      request<{
+        types: Array<{ locationType: number; label: string; count: number }>
+      }>('/admin/explore/stop-types'),
+    poiCategories: () =>
+      request<{
+        categories: Array<{ key: string; name: string; count: number }>
+        total: number
+      }>('/admin/explore/poi-categories'),
+    stops: (p: {
+      q?: string
+      limit?: number
+      offset?: number
+      locationType?: number
+      classification?: string
+      poiOnly?: boolean
+    }) => {
       const q = new URLSearchParams()
       if (p.q) q.set('q', p.q)
       if (p.limit) q.set('limit', String(p.limit))
       if (p.offset) q.set('offset', String(p.offset))
+      if (p.locationType !== undefined) q.set('location_type', String(p.locationType))
+      if (p.classification) q.set('classification', p.classification)
+      if (p.poiOnly) q.set('poi_only', 'true')
       return request<{
         items: Record<string, unknown>[]
         total: number
@@ -166,5 +277,11 @@ export const api = {
         pages: number
       }>(`/admin/explore/stops?${q}`)
     },
+    stop: (id: string) =>
+      request<{
+        stop: Record<string, unknown>
+        fareZone: { id: string; name: string | null; extras: unknown } | null
+        lines: Record<string, unknown>[]
+      }>(`/admin/explore/stops/${encodeURIComponent(id)}`),
   },
 }

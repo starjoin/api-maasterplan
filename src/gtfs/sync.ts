@@ -1,10 +1,14 @@
-import { prisma } from '../db.js'
-import { cleanupTmp, downloadAndExtract, fetchGtfsMetadata, fetchRfuInfo } from './downloader.js'
+import { prisma, getActiveSource, getMetaId } from '../db.js'
+import type { DataSource } from '../config.js'
+import { getSourceConfig } from '../config.js'
+import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
 import { importGtfsToDb } from './importer.js'
 import { parseGtfsDirectory } from './parser.js'
 import type { ImportStats } from './types.js'
+import { syncNetex } from '../netex/sync.js'
+import { isImportRunning, setImportRunning, setDownloadProgress } from '../import-state.js'
 
-let importRunning = false
+export { isImportRunning, setImportRunning }
 
 function extractRfuTimestamp(info: Record<string, unknown>): string | null {
   const candidates = [
@@ -28,125 +32,153 @@ async function appendLog(jobId: string, message: string) {
   await prisma.importJob.update({ where: { id: jobId }, data: { logs: JSON.stringify(logs) } })
 }
 
-export async function syncGtfs(triggeredBy: 'manual' | 'scheduler' = 'manual', force = false) {
-  if (importRunning) {
+/** Import de la source active (GTFS ou NeTEx). */
+export async function syncDataset(
+  triggeredBy: 'manual' | 'scheduler' = 'manual',
+  force = false,
+  source: DataSource = getActiveSource(),
+) {
+  if (source === 'netex') {
+    return syncNetex(triggeredBy, force)
+  }
+  return syncGtfs(triggeredBy, force, source)
+}
+
+export async function syncGtfs(
+  triggeredBy: 'manual' | 'scheduler' = 'manual',
+  force = false,
+  source: DataSource = 'gtfs',
+) {
+  if (isImportRunning()) {
     throw new Error('Un import est déjà en cours')
   }
 
-  importRunning = true
+  if (source !== getActiveSource()) {
+    throw new Error('Activez la source GTFS avant d’importer')
+  }
 
-  const job = await prisma.importJob.create({
-    data: { status: 'PENDING', triggeredBy },
-  })
+  setImportRunning(true)
+  const src = getSourceConfig(source)
+  const metaId = getMetaId(source)
 
   try {
-    await prisma.importJob.update({
-      where: { id: job.id },
-      data: { status: 'DOWNLOADING', startedAt: new Date() },
+    const job = await prisma.importJob.create({
+      data: { status: 'PENDING', triggeredBy, source },
     })
 
-    const rfuInfo = await fetchRfuInfo()
-    const gtfsMeta = await fetchGtfsMetadata().catch(() => null)
+    try {
+      await prisma.importJob.update({
+        where: { id: job.id },
+        data: { status: 'DOWNLOADING', startedAt: new Date() },
+      })
 
-    const rfuUpdatedAt =
-      extractRfuTimestamp(rfuInfo ?? {}) ??
-      gtfsMeta?.etag ??
-      gtfsMeta?.lastModified ??
-      null
-    const rfuVersion = rfuInfo?.version ? String(rfuInfo.version) : gtfsMeta?.etag ?? null
+      const rfuInfo = await fetchRfuInfo(source)
+      const zipMeta = await fetchZipMetadata(source).catch(() => null)
 
-    const meta = await prisma.datasetMeta.findUnique({ where: { id: 'default' } })
+      const rfuUpdatedAt =
+        extractRfuTimestamp(rfuInfo ?? {}) ?? zipMeta?.etag ?? zipMeta?.lastModified ?? null
+      const rfuVersion = rfuInfo?.version ? String(rfuInfo.version) : zipMeta?.etag ?? null
 
-    if (!force && meta?.rfuUpdatedAt && rfuUpdatedAt && meta.rfuUpdatedAt === rfuUpdatedAt) {
-      await appendLog(job.id, 'Données RFU inchangées — import ignoré')
+      const meta = await prisma.datasetMeta.findUnique({ where: { id: metaId } })
+
+      if (!force && meta?.rfuUpdatedAt && rfuUpdatedAt && meta.rfuUpdatedAt === rfuUpdatedAt) {
+        await appendLog(job.id, `Données ${src.label} inchangées — import ignoré`)
+        await prisma.importJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'SKIPPED',
+            completedAt: new Date(),
+            stats: meta.stats,
+          },
+        })
+        return job.id
+      }
+
+      await appendLog(job.id, `Téléchargement ${src.label} depuis le RFU...`)
+      const extractDir = await downloadAndExtract(job.id, source)
+
+      await prisma.importJob.update({
+        where: { id: job.id },
+        data: { status: 'PARSING' },
+      })
+      setDownloadProgress({ phase: 'parsing', percent: null, etaSeconds: null, speedBps: null })
+      await appendLog(job.id, `Parsing des fichiers ${src.label}...`)
+      const gtfs = parseGtfsDirectory(extractDir)
+
+      await prisma.importJob.update({
+        where: { id: job.id },
+        data: { status: 'IMPORTING' },
+      })
+      setDownloadProgress({ phase: 'importing', percent: null, etaSeconds: null, speedBps: null })
+
+      const stats = await importGtfsToDb(gtfs, (msg) => appendLog(job.id, msg))
+
+      await prisma.datasetMeta.upsert({
+        where: { id: metaId },
+        create: {
+          id: metaId,
+          lastImport: new Date(),
+          rfuVersion,
+          rfuUpdatedAt,
+          stats: JSON.stringify(stats),
+          format: source,
+        },
+        update: {
+          lastImport: new Date(),
+          rfuVersion,
+          rfuUpdatedAt,
+          stats: JSON.stringify(stats),
+          format: source,
+        },
+      })
+
       await prisma.importJob.update({
         where: { id: job.id },
         data: {
-          status: 'SKIPPED',
+          status: 'COMPLETED',
           completedAt: new Date(),
-          stats: meta.stats,
+          stats: JSON.stringify(stats),
         },
       })
+
+      await appendLog(job.id, `Import terminé : ${stats.routes} lignes, ${stats.stops} arrêts`)
+      cleanupTmp(job.id)
+
       return job.id
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      await appendLog(job.id, `Erreur : ${message}`)
+      await prisma.importJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          errorMessage: message,
+        },
+      })
+      cleanupTmp(job.id)
+      throw err
     }
-
-    await appendLog(job.id, 'Téléchargement du GTFS depuis le RFU...')
-    const extractDir = await downloadAndExtract(job.id)
-
-    await prisma.importJob.update({
-      where: { id: job.id },
-      data: { status: 'PARSING' },
-    })
-    await appendLog(job.id, 'Parsing des fichiers GTFS...')
-    const gtfs = parseGtfsDirectory(extractDir)
-
-    await prisma.importJob.update({
-      where: { id: job.id },
-      data: { status: 'IMPORTING' },
-    })
-
-    const stats = await importGtfsToDb(gtfs, (msg) => appendLog(job.id, msg))
-
-    await prisma.datasetMeta.upsert({
-      where: { id: 'default' },
-      create: {
-        id: 'default',
-        lastImport: new Date(),
-        rfuVersion,
-        rfuUpdatedAt,
-        stats: JSON.stringify(stats),
-      },
-      update: {
-        lastImport: new Date(),
-        rfuVersion,
-        rfuUpdatedAt,
-        stats: JSON.stringify(stats),
-      },
-    })
-
-    await prisma.importJob.update({
-      where: { id: job.id },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-        stats: JSON.stringify(stats),
-      },
-    })
-
-    await appendLog(job.id, `Import terminé : ${stats.routes} lignes, ${stats.stops} arrêts`)
-    cleanupTmp(job.id)
-
-    return job.id
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    await appendLog(job.id, `Erreur : ${message}`)
-    await prisma.importJob.update({
-      where: { id: job.id },
-      data: {
-        status: 'FAILED',
-        completedAt: new Date(),
-        errorMessage: message,
-      },
-    })
-    cleanupTmp(job.id)
-    throw err
   } finally {
-    importRunning = false
+    setImportRunning(false)
   }
 }
 
-export function isImportRunning() {
-  return importRunning
-}
-
 export async function getDatasetStats(): Promise<ImportStats & { lastImport?: Date | null }> {
-  const [meta, routes, stops, trips, agencies] = await Promise.all([
-    prisma.datasetMeta.findUnique({ where: { id: 'default' } }),
-    prisma.route.count(),
-    prisma.stop.count(),
-    prisma.trip.count(),
-    prisma.agency.count(),
-  ])
+  const metaId = getMetaId()
+  const [meta, routes, stops, trips, agencies, fareZones, fareAttributes, fareRules, transfers, pois] =
+    await Promise.all([
+      prisma.datasetMeta.findUnique({ where: { id: metaId } }),
+      prisma.route.count(),
+      prisma.stop.count(),
+      prisma.trip.count(),
+      prisma.agency.count(),
+      prisma.fareZone.count(),
+      prisma.fareAttribute.count(),
+      prisma.fareRule.count(),
+      prisma.transfer.count(),
+      prisma.stop.count({ where: { locationType: 3 } }),
+    ])
 
   const stored = meta?.stats ? (JSON.parse(meta.stats) as ImportStats) : null
 
@@ -159,6 +191,11 @@ export async function getDatasetStats(): Promise<ImportStats & { lastImport?: Da
     calendars: stored?.calendars ?? 0,
     calendarDates: stored?.calendarDates ?? 0,
     shapes: stored?.shapes ?? 0,
+    fareZones,
+    fareAttributes,
+    fareRules,
+    transfers,
+    pois,
     lastImport: meta?.lastImport,
   }
 }

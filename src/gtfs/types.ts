@@ -88,6 +88,36 @@ export interface GtfsShapeRow {
   shape_dist_traveled?: string
 }
 
+export interface GtfsFareAttributeRow {
+  fare_id: string
+  price?: string
+  currency_type?: string
+  payment_method?: string
+  transfers?: string
+  transfer_duration?: string
+}
+
+export interface GtfsFareRuleRow {
+  fare_id: string
+  route_id?: string
+  origin_id?: string
+  destination_id?: string
+  contains_id?: string
+}
+
+export interface GtfsTransferRow {
+  from_stop_id: string
+  to_stop_id: string
+  transfer_type: string
+  min_transfer_time?: string
+}
+
+/** Zones tarifaires (NeTEx FareZone ou dérivé GTFS) */
+export interface GtfsFareZoneRow {
+  fare_zone_id: string
+  fare_zone_name?: string
+}
+
 export interface GtfsFiles {
   'agency.txt'?: GtfsAgencyRow[]
   'stops.txt'?: GtfsStopRow[]
@@ -97,6 +127,11 @@ export interface GtfsFiles {
   'calendar.txt'?: GtfsCalendarRow[]
   'calendar_dates.txt'?: GtfsCalendarDateRow[]
   'shapes.txt'?: GtfsShapeRow[]
+  'fare_attributes.txt'?: GtfsFareAttributeRow[]
+  'fare_rules.txt'?: GtfsFareRuleRow[]
+  'transfers.txt'?: GtfsTransferRow[]
+  /** Non-standard / NeTEx → fare zones */
+  'fare_zones.txt'?: GtfsFareZoneRow[]
 }
 
 export interface ImportStats {
@@ -108,6 +143,11 @@ export interface ImportStats {
   calendars: number
   calendarDates: number
   shapes: number
+  fareZones: number
+  fareAttributes: number
+  fareRules: number
+  transfers: number
+  pois: number
 }
 
 export interface RfuInfo {

@@ -1,4 +1,5 @@
 import { prisma } from '../db.js'
+import { resolveCommercialModeNavitia } from './commercial-modes.js'
 import { modeFromGtfsType } from './modes.js'
 
 type RouteRow = {
@@ -23,10 +24,12 @@ const CO2_BY_PHYSICAL: Record<string, number> = {
   Metro: 3.5,
   Tramway: 5,
   Bus: 103.5,
+  Chrono: 20,
   Trolleybus: 20,
   Train: 6,
   Funicular: 5,
   CableCar: 5,
+  Navigone: 120,
   Ferry: 120,
   Monorail: 5,
 }
@@ -54,33 +57,7 @@ function compareGtfsTime(a: string, b: string): number {
 }
 
 export function resolveCommercialMode(route: RouteRow): { id: string; name: string } {
-  const code = (route.shortName ?? '').toUpperCase()
-  const name = (route.longName ?? '').toLowerCase()
-
-  if (route.type === 1 || /^[ABCD]$/.test(code)) {
-    return { id: 'commercial_mode:Métro', name: 'Métro' }
-  }
-  if (/^TB\d+/i.test(code) || name.includes('trambus')) {
-    return { id: 'commercial_mode:Trambus', name: 'Trambus' }
-  }
-  if (/^JD/i.test(code) || name.includes('junior') || name.includes('collège') || name.includes('lycée')) {
-    return { id: 'commercial_mode:BusJD', name: 'Junior Direct' }
-  }
-  if (route.type === 0) {
-    return { id: 'commercial_mode:Tramway', name: 'Tramway' }
-  }
-  if (route.type === 2) {
-    return { id: 'commercial_mode:Train', name: 'Train' }
-  }
-  if (route.type === 7) {
-    return { id: 'commercial_mode:Funiculaire', name: 'Funiculaire' }
-  }
-  if (route.type === 11) {
-    return { id: 'commercial_mode:Trolleybus', name: 'Trolleybus' }
-  }
-
-  const phys = modeFromGtfsType(route.type)
-  return { id: `commercial_mode:${phys.name}`, name: phys.name }
+  return resolveCommercialModeNavitia(route)
 }
 
 function directionType(directionId: number | null | undefined): 'outbound' | 'inbound' | 'forward' {

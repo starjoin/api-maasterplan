@@ -1,5 +1,6 @@
-import { prisma } from '../db.js'
+import { getMetaId, prisma } from '../db.js'
 import { getDatasetStats } from '../gtfs/sync.js'
+import { resolveCommercialModeNavitia } from './commercial-modes.js'
 import { gtfsTypesForModeId, hexColor, modeFromGtfsType, PHYSICAL_MODES } from './modes.js'
 import { buildNavitiaLine, buildNavitiaLines } from './line-navitia.js'
 
@@ -37,6 +38,7 @@ function formatLine(r: {
   sortOrder: number | null
 }) {
   const mode = modeFromGtfsType(r.type)
+  const commercial = resolveCommercialModeNavitia(r)
   return {
     id: r.routeId,
     name: r.longName ?? r.shortName ?? r.routeId,
@@ -49,7 +51,7 @@ function formatLine(r: {
     agency_id: r.agencyId,
     sort_order: r.sortOrder,
     physical_mode: { id: mode.id, name: mode.name },
-    commercial_mode: { id: mode.id, name: mode.name },
+    commercial_mode: commercial,
   }
 }
 
@@ -61,12 +63,13 @@ function formatStop(s: {
   lat: number | null
   lon: number | null
   locationType: number | null
-  parentStation: string | null
-  wheelchairBoarding: number | null
+  parentStation?: string | null
+  wheelchairBoarding?: number | null
   zoneId: string | null
-  url: string | null
+  url?: string | null
 }) {
   const isArea = s.locationType === 1
+  const isPoi = s.locationType === 3
   return {
     id: s.stopId,
     name: s.name,
@@ -75,17 +78,17 @@ function formatStop(s: {
     description: s.desc,
     coord: s.lat != null && s.lon != null ? { lat: s.lat, lon: s.lon } : null,
     location_type: s.locationType ?? 0,
-    embedded_type: isArea ? 'stop_area' : 'stop_point',
-    parent_station: s.parentStation,
-    wheelchair_boarding: s.wheelchairBoarding,
+    embedded_type: isPoi ? 'poi' : isArea ? 'stop_area' : 'stop_point',
+    parent_station: s.parentStation ?? null,
+    wheelchair_boarding: s.wheelchairBoarding ?? null,
     zone_id: s.zoneId,
-    url: s.url,
+    url: s.url ?? null,
   }
 }
 
 export async function coverage() {
   const stats = await getDatasetStats()
-  const meta = await prisma.datasetMeta.findUnique({ where: { id: 'default' } })
+  const meta = await prisma.datasetMeta.findUnique({ where: { id: getMetaId() } })
   return {
     coverage: {
       id: 'sytral-rfu',
@@ -93,6 +96,7 @@ export async function coverage() {
       dataset_created_at: meta?.lastImport?.toISOString() ?? null,
       rfu_version: meta?.rfuVersion ?? null,
       rfu_updated_at: meta?.rfuUpdatedAt ?? null,
+      source: getMetaId(),
     },
     datasets: {
       lines: stats.routes,
@@ -483,20 +487,40 @@ export async function places(q: Query) {
   const placesOut: Array<Record<string, unknown>> = []
 
   if (types.includes('stop_point') || types.includes('stop_area') || types.includes('poi')) {
+    const typeOr: Array<Record<string, unknown>> = []
+    if (types.includes('stop_point')) {
+      typeOr.push({ locationType: 0 }, { locationType: null })
+    }
+    if (types.includes('stop_area')) typeOr.push({ locationType: 1 })
+    if (types.includes('poi')) typeOr.push({ locationType: 3 })
+
     const stops = await prisma.stop.findMany({
       where: {
-        OR: [{ name: { contains: term } }, { code: { contains: term } }, { stopId: { contains: term } }],
+        AND: [
+          {
+            OR: [
+              { name: { contains: term } },
+              { code: { contains: term } },
+              { stopId: { contains: term } },
+              { desc: { contains: term } },
+            ],
+          },
+          { OR: typeOr },
+        ],
       },
       take: limit,
       orderBy: { name: 'asc' },
     })
     for (const s of stops) {
+      const embedded =
+        s.locationType === 3 ? 'poi' : s.locationType === 1 ? 'stop_area' : 'stop_point'
       placesOut.push({
         id: s.stopId,
         name: s.name,
         quality: 100,
-        embedded_type: s.locationType === 1 ? 'stop_area' : 'stop_point',
+        embedded_type: embedded,
         stop_point: formatStop(s),
+        ...(embedded === 'poi' ? { poi: formatPoi(s) } : {}),
       })
     }
   }
@@ -561,29 +585,52 @@ export async function placesNearby(q: Query) {
     .slice(0, limit)
 
   return {
-    places_nearby: scored.map(({ stop, distance: d }) => ({
-      distance: Math.round(d),
-      embedded_type: stop.locationType === 1 ? 'stop_area' : 'stop_point',
-      stop_point: formatStop(stop),
-    })),
+    places_nearby: scored.map(({ stop, distance: d }) => {
+      const embedded =
+        stop.locationType === 3 ? 'poi' : stop.locationType === 1 ? 'stop_area' : 'stop_point'
+      return {
+        distance: Math.round(d),
+        embedded_type: embedded,
+        stop_point: formatStop(stop),
+        ...(embedded === 'poi' ? { poi: formatPoi(stop) } : {}),
+      }
+    }),
     pagination: { total: scored.length, limit, offset: 0 },
   }
 }
 
-/** POI = arrêts / stations exposés comme points d'intérêt */
+/** POI = PointOfInterest NeTEx (location_type=3) ; stations via poi_type=stop_area */
 export async function listPoi(q: Query) {
   const limit = parseLimit(q)
   const offset = parseOffset(q)
-  const where: Record<string, unknown> = {}
+  const and: Array<Record<string, unknown>> = []
 
   if (q.q) {
-    where.OR = [{ name: { contains: q.q } }, { stopId: { contains: q.q } }]
+    and.push({
+      OR: [
+        { name: { contains: q.q } },
+        { stopId: { contains: q.q } },
+        { desc: { contains: q.q } },
+        { code: { contains: q.q } },
+      ],
+    })
   }
 
-  // Stations / POI : location_type 1 (station) par défaut, sinon tous
-  if (q.all !== 'true') {
-    where.locationType = q.poi_type === 'stop' ? 0 : 1
+  if (q.all === 'true') {
+    // tous les types
+  } else if (q.poi_type === 'stop' || q.poi_type === 'stop_point') {
+    and.push({ OR: [{ locationType: 0 }, { locationType: null }] })
+  } else if (q.poi_type === 'stop_area' || q.poi_type === 'station') {
+    and.push({ locationType: 1 })
+  } else {
+    and.push({ locationType: 3 })
   }
+
+  if (q.classification) {
+    and.push({ desc: { contains: q.classification } })
+  }
+
+  const where = and.length ? { AND: and } : {}
 
   const [rows, total] = await Promise.all([
     prisma.stop.findMany({ where, take: limit, skip: offset, orderBy: { name: 'asc' } }),
@@ -591,14 +638,7 @@ export async function listPoi(q: Query) {
   ])
 
   return {
-    poi: rows.map((s) => ({
-      id: s.stopId,
-      name: s.name,
-      label: s.name,
-      poi_type: s.locationType === 1 ? 'stop_area' : 'stop_point',
-      coord: s.lat != null && s.lon != null ? { lat: s.lat, lon: s.lon } : null,
-      stop_point: formatStop(s),
-    })),
+    poi: rows.map((s) => formatPoi(s)),
     pagination: { total, limit, offset, hasMore: offset + limit < total },
   }
 }
@@ -606,15 +646,52 @@ export async function listPoi(q: Query) {
 export async function getPoi(id: string) {
   const stop = await prisma.stop.findUnique({ where: { stopId: id } })
   if (!stop) return null
+  return { poi: formatPoi(stop) }
+}
+
+function formatPoi(s: {
+  stopId: string
+  name: string
+  desc: string | null
+  lat: number | null
+  lon: number | null
+  locationType: number | null
+  code: string | null
+  extras: string | null
+  zoneId: string | null
+}) {
+  let extras: Record<string, unknown> | null = null
+  if (s.extras) {
+    try {
+      extras = JSON.parse(s.extras) as Record<string, unknown>
+    } catch {
+      extras = null
+    }
+  }
+  const classifications = Array.isArray(extras?.classifications)
+    ? (extras!.classifications as string[])
+    : s.desc
+      ? [s.desc]
+      : []
+  const poiType =
+    s.locationType === 3
+      ? 'poi'
+      : s.locationType === 1
+        ? 'stop_area'
+        : 'stop_point'
   return {
-    poi: {
-      id: stop.stopId,
-      name: stop.name,
-      label: stop.name,
-      poi_type: stop.locationType === 1 ? 'stop_area' : 'stop_point',
-      coord: stop.lat != null && stop.lon != null ? { lat: stop.lat, lon: stop.lon } : null,
-      stop_point: formatStop(stop),
-    },
+    id: s.stopId,
+    name: s.name,
+    label: s.name,
+    poi_type: poiType,
+    classification: classifications[0] ?? null,
+    classifications,
+    code: s.code,
+    zone_id: s.zoneId,
+    coord: s.lat != null && s.lon != null ? { lat: s.lat, lon: s.lon } : null,
+    address: extras?.address ?? null,
+    extras,
+    stop_point: formatStop(s),
   }
 }
 

@@ -28,10 +28,18 @@ export class EndpointRegistry {
       select: { id: true, path: true, method: true, responseSchema: true },
     })
 
-    this.routes = endpoints.map((ep) => ({
-      ...ep,
-      segments: ep.path.split('/').filter(Boolean),
-    }))
+    // Préférer les chemins statiques aux params (:id) pour la même profondeur
+    this.routes = endpoints
+      .map((ep) => ({
+        ...ep,
+        segments: ep.path.split('/').filter(Boolean),
+      }))
+      .sort((a, b) => {
+        const paramScore = (segs: string[]) => segs.filter((s) => s.startsWith(':')).length
+        const d = paramScore(a.segments) - paramScore(b.segments)
+        if (d !== 0) return d
+        return a.path.localeCompare(b.path)
+      })
   }
 
   resolve(method: string, urlPath: string): ResolvedEndpoint | null {

@@ -1,5 +1,6 @@
 import type { ResponseSchema } from './types.js'
 import * as sae from '../sae/handlers.js'
+import * as siri from '../siri/handlers.js'
 
 export type PresetId =
   | 'coverage'
@@ -20,6 +21,10 @@ export type PresetId =
   | 'networks'
   | 'vehicle_journeys_list'
   | 'vehicle_journey_detail'
+  | 'vehicle_monitoring_list'
+  | 'vehicle_monitoring_detail'
+  | 'vehicle_monitoring_geojson'
+  | 'vehicle_monitoring_status'
   | 'sae_catalog'
 
 export interface PresetMeta {
@@ -216,6 +221,42 @@ export const PRESET_CATALOG: PresetMeta[] = [
     pathHint: '/v1/vehicle_journeys/:id',
   },
   {
+    id: 'vehicle_monitoring_list',
+    label: 'Positions véhicules (temps réel)',
+    description: 'Cache SIRI-Lite VehicleMonitoring (Grand Lyon), refresh ~10s',
+    responseKeys: ['vehicle_monitoring', 'pagination', 'realtime'],
+    entity: 'Vehicle',
+    multiple: true,
+    pathHint: '/v1/vehicle_monitoring',
+  },
+  {
+    id: 'vehicle_monitoring_detail',
+    label: 'Position véhicule (détail)',
+    description: 'Un véhicule par id / vehicle_ref',
+    responseKeys: ['vehicle_monitoring', 'realtime'],
+    entity: 'Vehicle',
+    multiple: false,
+    pathHint: '/v1/vehicle_monitoring/:id',
+  },
+  {
+    id: 'vehicle_monitoring_geojson',
+    label: 'Positions véhicules GeoJSON',
+    description: 'FeatureCollection des positions temps réel',
+    responseKeys: ['type', 'features', 'realtime'],
+    entity: 'Vehicle',
+    multiple: false,
+    pathHint: '/v1/vehicle_monitoring/geojson',
+  },
+  {
+    id: 'vehicle_monitoring_status',
+    label: 'Statut temps réel',
+    description: 'Âge du cache SIRI, erreurs, compteurs',
+    responseKeys: ['realtime'],
+    entity: 'Vehicle',
+    multiple: false,
+    pathHint: '/v1/vehicle_monitoring/_status',
+  },
+  {
     id: 'sae_catalog',
     label: 'Catalogue endpoints',
     description: 'Index JSON des routes SAE documentées',
@@ -380,6 +421,18 @@ export async function resolvePreset(
       break
     case 'vehicle_journey_detail':
       result = await sae.getVehicleJourney(id)
+      break
+    case 'vehicle_monitoring_list':
+      result = siri.listVehicleMonitoring(q)
+      break
+    case 'vehicle_monitoring_detail':
+      result = siri.getVehicleMonitoring(id)
+      break
+    case 'vehicle_monitoring_geojson':
+      result = siri.vehicleMonitoringGeojson(q)
+      break
+    case 'vehicle_monitoring_status':
+      result = siri.vehicleMonitoringStatus()
       break
     case 'sae_catalog':
       result = {

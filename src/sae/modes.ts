@@ -11,10 +11,14 @@ export const PHYSICAL_MODES: PhysicalMode[] = [
   { id: 'Metro', name: 'Métro', gtfsTypes: [1] },
   { id: 'Train', name: 'Train', gtfsTypes: [2] },
   { id: 'Bus', name: 'Bus', gtfsTypes: [3] },
-  { id: 'Ferry', name: 'Ferry', gtfsTypes: [4] },
+  /** Cars région (NeTEx coach) — type GTFS étendu 200, distinct du bus */
+  { id: 'Coach', name: 'Cars région', gtfsTypes: [200] },
+  /** Sur le RFU Sytral, route_type 4 = Navigône (pas Ferry) */
+  { id: 'Navigone', name: 'Navigône', gtfsTypes: [4] },
   { id: 'CableCar', name: 'Téléphérique', gtfsTypes: [5, 6] },
   { id: 'Funicular', name: 'Funiculaire', gtfsTypes: [7] },
-  { id: 'Trolleybus', name: 'Trolleybus', gtfsTypes: [11] },
+  /** Sur le RFU Sytral, route_type 11 = Chrono */
+  { id: 'Chrono', name: 'Chrono', gtfsTypes: [11] },
   { id: 'Monorail', name: 'Monorail', gtfsTypes: [12] },
 ]
 

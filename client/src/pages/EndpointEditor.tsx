@@ -11,7 +11,17 @@ import {
 } from '../lib/api'
 import { ChevronLeft, Plus, Trash2, Loader2, Play, HelpCircle } from 'lucide-react'
 
-const ENTITIES = ['Agency', 'Stop', 'Route', 'Trip', 'StopTime', 'Calendar', 'CalendarDate', 'Shape']
+const ENTITIES = [
+  'Agency',
+  'Stop',
+  'Route',
+  'Trip',
+  'StopTime',
+  'Calendar',
+  'CalendarDate',
+  'Shape',
+  'Vehicle',
+]
 
 const ENTITY_DESCRIPTIONS: Record<string, string> = {
   Agency: 'Opérateur de transport',
@@ -22,6 +32,7 @@ const ENTITY_DESCRIPTIONS: Record<string, string> = {
   Calendar: 'Planning de service (jours actifs)',
   CalendarDate: 'Exception au planning',
   Shape: 'Tracé géographique d\'une ligne',
+  Vehicle: 'Position véhicule temps réel (SIRI-Lite)',
 }
 
 const EMPTY_SCHEMA: ResponseSchema = {

@@ -570,6 +570,80 @@ const SAE_PRESETS: EndpointDef[] = [
     params: [{ name: 'id', type: 'string', location: 'path', required: true }],
   },
   {
+    path: '/v1/vehicle_monitoring',
+    method: 'GET',
+    description: 'Positions véhicules temps réel (SIRI-Lite Grand Lyon)',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_list', 'Vehicle', { multiple: true, paginate: true }),
+    params: [
+      { name: 'line', type: 'string', location: 'query', required: false },
+      { name: 'vehicle_id', type: 'string', location: 'query', required: false },
+      { name: 'direction', type: 'string', location: 'query', required: false },
+      { name: 'vehicle_mode', type: 'string', location: 'query', required: false },
+      { name: 'bbox', type: 'string', location: 'query', required: false },
+      { name: 'q', type: 'string', location: 'query', required: false },
+      { name: 'limit', type: 'number', location: 'query', required: false },
+      { name: 'offset', type: 'number', location: 'query', required: false },
+    ],
+  },
+  {
+    path: '/v1/positions_vehicules',
+    method: 'GET',
+    description: 'Alias FR — positions véhicules temps réel',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_list', 'Vehicle', { multiple: true, paginate: true }),
+    params: [
+      { name: 'line', type: 'string', location: 'query', required: false },
+      { name: 'vehicle_id', type: 'string', location: 'query', required: false },
+      { name: 'direction', type: 'string', location: 'query', required: false },
+      { name: 'limit', type: 'number', location: 'query', required: false },
+      { name: 'offset', type: 'number', location: 'query', required: false },
+    ],
+  },
+  {
+    path: '/v1/vehicle_monitoring/geojson',
+    method: 'GET',
+    description: 'Positions véhicules temps réel en GeoJSON',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_geojson', 'Vehicle', { multiple: false }),
+    params: [
+      { name: 'line', type: 'string', location: 'query', required: false },
+      { name: 'bbox', type: 'string', location: 'query', required: false },
+    ],
+  },
+  {
+    path: '/v1/positions_vehicules/geojson',
+    method: 'GET',
+    description: 'Alias FR — GeoJSON positions',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_geojson', 'Vehicle', { multiple: false }),
+    params: [{ name: 'line', type: 'string', location: 'query', required: false }],
+  },
+  {
+    path: '/v1/vehicle_monitoring/_status',
+    method: 'GET',
+    description: 'Statut du cache temps réel SIRI',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_status', 'Vehicle', { multiple: false }),
+    params: [],
+  },
+  {
+    path: '/v1/vehicle_monitoring/:id',
+    method: 'GET',
+    description: 'Détail position d’un véhicule',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_detail', 'Vehicle', { multiple: false }),
+    params: [{ name: 'id', type: 'string', location: 'path', required: true }],
+  },
+  {
+    path: '/v1/positions_vehicules/:id',
+    method: 'GET',
+    description: 'Alias FR — détail véhicule',
+    isActive: true,
+    responseSchema: preset('vehicle_monitoring_detail', 'Vehicle', { multiple: false }),
+    params: [{ name: 'id', type: 'string', location: 'path', required: true }],
+  },
+  {
     path: '/v1/endpoints',
     method: 'GET',
     description: 'Catalogue des presets SAE',
@@ -579,11 +653,16 @@ const SAE_PRESETS: EndpointDef[] = [
   },
 ]
 
-export async function seedDefaultEndpoints(prisma: PrismaClient) {
+export async function seedDefaultEndpoints(
+  prisma: PrismaClient,
+  sourceOverride?: 'gtfs' | 'netex',
+) {
+  const { getActiveSource } = await import('./db.js')
+  const source = sourceOverride ?? getActiveSource()
   await prisma.datasetMeta.upsert({
-    where: { id: 'default' },
-    create: { id: 'default' },
-    update: {},
+    where: { id: source },
+    create: { id: source, format: source },
+    update: { format: source },
   })
 
   // Nettoyer les anciennes fiches doc inactives "native" remplacées par des presets actifs

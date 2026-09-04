@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type DownloadProgress } from '../lib/api'
 import {
   RefreshCw,
   Loader2,
@@ -23,13 +23,63 @@ const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof
   IMPORTING: { label: 'Import', color: 'text-blue-600', icon: Loader2 },
 }
 
+function DownloadProgressBlock({ progress }: { progress: DownloadProgress }) {
+  if (progress.phase === 'idle') return null
+
+  const phaseLabel =
+    progress.phase === 'downloading'
+      ? 'Téléchargement'
+      : progress.phase === 'extracting'
+        ? 'Extraction'
+        : progress.phase === 'parsing'
+          ? 'Parsing'
+          : 'Import en base'
+
+  const showBar = progress.phase === 'downloading' && progress.percent != null
+
+  return (
+    <div className="mb-4 p-4 rounded-lg border border-blue-100 bg-blue-50/60 space-y-2">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium text-blue-900 flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {phaseLabel}
+          {progress.percent != null && progress.phase === 'downloading' && (
+            <span className="tabular-nums font-semibold">{progress.percent.toFixed(1)} %</span>
+          )}
+        </span>
+        <span className="text-xs text-blue-700 tabular-nums">
+          {progress.etaLabel ? `reste ~ ${progress.etaLabel}` : null}
+          {progress.speedLabel ? (progress.etaLabel ? ' · ' : '') + progress.speedLabel : null}
+        </span>
+      </div>
+      {showBar && (
+        <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
+          <div
+            className="h-full bg-blue-500 transition-[width] duration-300 ease-out"
+            style={{ width: `${Math.min(100, Math.max(0, progress.percent ?? 0))}%` }}
+          />
+        </div>
+      )}
+      {progress.bytesLabel && (
+        <p className="text-xs text-blue-700 tabular-nums">{progress.bytesLabel}</p>
+      )}
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const qc = useQueryClient()
 
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard'],
     queryFn: api.dashboard.get,
-    refetchInterval: (q) => (q.state.data?.importRunning ? 3000 : 30_000),
+    refetchInterval: (q) => {
+      const running = q.state.data?.importRunning
+      const phase = q.state.data?.downloadProgress?.phase
+      if (running && phase === 'downloading') return 1000
+      if (running) return 2000
+      return 30_000
+    },
   })
 
   const importMut = useMutation({
@@ -55,13 +105,19 @@ export default function Dashboard() {
     { label: 'Endpoints actifs', value: data.endpoints.active, icon: Code2, color: 'bg-orange-50 text-orange-600' },
   ]
 
+  const progress = data.downloadProgress
+  const latest = data.jobs.recent[0]
+
   return (
     <div className="p-8 max-w-6xl">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
           <p className="text-sm text-gray-400 mt-1">
-            Données GTFS Sytral Mobilités via le RFU Enroute
+            Source active :{' '}
+            <span className="font-medium text-gray-600">{data.source?.label ?? 'GTFS'}</span>
+            {' · '}
+            Sytral Mobilités via le RFU Enroute
           </p>
         </div>
         <div className="flex gap-2">
@@ -75,7 +131,7 @@ export default function Dashboard() {
             ) : (
               <RefreshCw className="w-4 h-4" />
             )}
-            Synchroniser RFU
+            Importer {data.source?.label ?? 'GTFS'}
           </button>
           <button
             className="btn-ghost border border-gray-200"
@@ -87,6 +143,10 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {data.importRunning && progress && progress.phase !== 'idle' && (
+        <DownloadProgressBlock progress={progress} />
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {stats.map(({ label, value, icon: Icon, color }) => (
@@ -102,8 +162,12 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card p-6">
-          <h2 className="font-semibold mb-4">Source RFU</h2>
+          <h2 className="font-semibold mb-4">Source RFU ({data.source?.label ?? 'GTFS'})</h2>
           <dl className="space-y-3 text-sm">
+            <div>
+              <dt className="text-gray-400">Archive</dt>
+              <dd className="font-mono text-xs break-all">{data.rfu.gtfsUrl}</dd>
+            </div>
             <div>
               <dt className="text-gray-400">Dernière synchro</dt>
               <dd className="font-medium">
@@ -132,13 +196,43 @@ export default function Dashboard() {
               {data.jobs.recent.map((job) => {
                 const s = STATUS_LABELS[job.status] ?? STATUS_LABELS.PENDING
                 const Icon = s.icon
+                const isActiveDownload =
+                  data.importRunning &&
+                  latest?.id === job.id &&
+                  job.status === 'DOWNLOADING' &&
+                  progress?.phase === 'downloading'
                 return (
-                  <li key={job.id} className="flex items-center gap-3 text-sm">
-                    <Icon className={`w-4 h-4 flex-shrink-0 ${s.color} ${job.status.includes('ING') ? 'animate-spin' : ''}`} />
-                    <span className="flex-1 truncate text-gray-600">
-                      {new Date(job.createdAt).toLocaleString('fr-FR')}
-                    </span>
-                    <span className={`badge bg-gray-100 ${s.color}`}>{s.label}</span>
+                  <li key={job.id} className="flex flex-col gap-1.5 text-sm">
+                    <div className="flex items-center gap-3">
+                      <Icon
+                        className={`w-4 h-4 flex-shrink-0 ${s.color} ${job.status.includes('ING') ? 'animate-spin' : ''}`}
+                      />
+                      <span className="flex-1 truncate text-gray-600">
+                        {new Date(job.createdAt).toLocaleString('fr-FR')}
+                      </span>
+                      <span className={`badge bg-gray-100 ${s.color}`}>
+                        {isActiveDownload && progress.percent != null
+                          ? `Téléchargement ${progress.percent.toFixed(0)} %`
+                          : s.label}
+                      </span>
+                    </div>
+                    {isActiveDownload && (
+                      <div className="ml-7 space-y-1">
+                        <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
+                          <div
+                            className="h-full bg-blue-500 transition-[width] duration-300"
+                            style={{
+                              width: `${Math.min(100, Math.max(0, progress.percent ?? 0))}%`,
+                            }}
+                          />
+                        </div>
+                        <p className="text-xs text-gray-500 tabular-nums">
+                          {progress.bytesLabel}
+                          {progress.etaLabel ? ` · reste ~ ${progress.etaLabel}` : ''}
+                          {progress.speedLabel ? ` · ${progress.speedLabel}` : ''}
+                        </p>
+                      </div>
+                    )}
                   </li>
                 )
               })}

@@ -5,11 +5,14 @@ import type {
   GtfsAgencyRow,
   GtfsCalendarDateRow,
   GtfsCalendarRow,
+  GtfsFareAttributeRow,
+  GtfsFareRuleRow,
   GtfsFiles,
   GtfsRouteRow,
   GtfsShapeRow,
   GtfsStopRow,
   GtfsStopTimeRow,
+  GtfsTransferRow,
   GtfsTripRow,
 } from './types.js'
 
@@ -22,6 +25,9 @@ const GTFS_FILE_NAMES = [
   'calendar.txt',
   'calendar_dates.txt',
   'shapes.txt',
+  'fare_attributes.txt',
+  'fare_rules.txt',
+  'transfers.txt',
 ] as const
 
 export function parseGtfsDirectory(dir: string): GtfsFiles {
@@ -68,6 +74,15 @@ export function parseGtfsDirectory(dir: string): GtfsFiles {
         break
       case 'shapes.txt':
         result['shapes.txt'] = rows as GtfsShapeRow[]
+        break
+      case 'fare_attributes.txt':
+        result['fare_attributes.txt'] = rows as GtfsFareAttributeRow[]
+        break
+      case 'fare_rules.txt':
+        result['fare_rules.txt'] = rows as GtfsFareRuleRow[]
+        break
+      case 'transfers.txt':
+        result['transfers.txt'] = rows as GtfsTransferRow[]
         break
     }
   }

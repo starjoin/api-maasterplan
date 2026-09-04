@@ -4,6 +4,8 @@ import Dashboard from './pages/Dashboard'
 import ApiDesigner from './pages/ApiDesigner'
 import EndpointEditor from './pages/EndpointEditor'
 import Explorer from './pages/Explorer'
+import LineDetail from './pages/LineDetail'
+import PoiDetail from './pages/PoiDetail'
 import Documentation from './pages/Documentation'
 
 export default function App() {
@@ -14,6 +16,8 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="explorer" element={<Explorer />} />
+          <Route path="explorer/lines/:id" element={<LineDetail />} />
+          <Route path="explorer/stops/:id" element={<PoiDetail />} />
           <Route path="api-designer" element={<ApiDesigner />} />
           <Route path="api-designer/new" element={<EndpointEditor />} />
           <Route path="api-designer/:id" element={<EndpointEditor />} />

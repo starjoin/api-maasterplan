@@ -7,7 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "tsx watch --clear-screen=false --exclude 'data/**' --exclude 'client/**' --exclude 'dist/**' --exclude '**/*.{html,css,svg,png,db,db-*}' src/index.ts",
+    "dev:client": "npm run client:dev",
     "build": "tsc -p tsconfig.build.json",
     "build:deploy": "prisma generate && npm run build && cd client && npm ci && npm run build",
     "start": "node dist/index.js",
@@ -26,6 +28,7 @@
     "adm-zip": "^0.5.16",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
+    "fast-xml-parser": "^5.11.1",
     "fastify": "^4.28.1",
     "node-cron": "^3.0.3",
     "prisma": "^5.22.0",
@@ -35,6 +38,7 @@
     "@types/adm-zip": "^0.5.5",
     "@types/node": "^22.10.1",
     "@types/node-cron": "^3.0.11",
+    "concurrently": "^10.0.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

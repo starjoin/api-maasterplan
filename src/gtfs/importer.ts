@@ -4,9 +4,16 @@ import type { GtfsFiles, ImportStats } from './types.js'
 
 type LogFn = (msg: string) => void
 
+type ExtrasMaps = {
+  routeExtras?: Record<string, Record<string, unknown>>
+  stopExtras?: Record<string, Record<string, unknown>>
+  fareZoneExtras?: Record<string, Record<string, unknown>>
+}
+
 export async function importGtfsToDb(
   gtfs: GtfsFiles,
   log: LogFn = console.log,
+  extras: ExtrasMaps = {},
 ): Promise<ImportStats> {
   const stats: ImportStats = {
     agencies: 0,
@@ -17,17 +24,26 @@ export async function importGtfsToDb(
     calendars: 0,
     calendarDates: 0,
     shapes: 0,
+    fareZones: 0,
+    fareAttributes: 0,
+    fareRules: 0,
+    transfers: 0,
+    pois: 0,
   }
 
   const batchSize = config.IMPORT_BATCH_SIZE
 
-  log('Nettoyage des données GTFS existantes...')
+  log('Nettoyage des données existantes...')
   await prisma.$transaction([
     prisma.stopTime.deleteMany(),
     prisma.shape.deleteMany(),
     prisma.trip.deleteMany(),
     prisma.calendarDate.deleteMany(),
     prisma.calendar.deleteMany(),
+    prisma.fareRule.deleteMany(),
+    prisma.fareAttribute.deleteMany(),
+    prisma.fareZone.deleteMany(),
+    prisma.transfer.deleteMany(),
     prisma.route.deleteMany(),
     prisma.stop.deleteMany(),
     prisma.agency.deleteMany(),
@@ -52,7 +68,7 @@ export async function importGtfsToDb(
 
   const stops = gtfs['stops.txt'] ?? []
   if (stops.length > 0) {
-    log(`Import de ${stops.length} arrêts...`)
+    log(`Import de ${stops.length} arrêts / POI...`)
     await batchInsert(stops, batchSize, (chunk) =>
       prisma.stop.createMany({
         data: chunk.map((s) => ({
@@ -67,10 +83,82 @@ export async function importGtfsToDb(
           locationType: s.location_type ? parseInt(s.location_type, 10) : null,
           parentStation: s.parent_station || null,
           wheelchairBoarding: s.wheelchair_boarding ? parseInt(s.wheelchair_boarding, 10) : null,
+          extras: extras.stopExtras?.[s.stop_id]
+            ? JSON.stringify(extras.stopExtras[s.stop_id])
+            : null,
         })),
       }),
     )
     stats.stops = stops.length
+    stats.pois = stops.filter((s) => s.location_type === '3').length
+  }
+
+  const fareZones = gtfs['fare_zones.txt'] ?? []
+  if (fareZones.length > 0) {
+    log(`Import de ${fareZones.length} zones tarifaires...`)
+    await batchInsert(fareZones, batchSize, (chunk) =>
+      prisma.fareZone.createMany({
+        data: chunk.map((z) => ({
+          zoneId: z.fare_zone_id,
+          name: z.fare_zone_name || null,
+          extras: extras.fareZoneExtras?.[z.fare_zone_id]
+            ? JSON.stringify(extras.fareZoneExtras[z.fare_zone_id])
+            : null,
+        })),
+      }),
+    )
+    stats.fareZones = fareZones.length
+  }
+
+  const fareAttributes = gtfs['fare_attributes.txt'] ?? []
+  if (fareAttributes.length > 0) {
+    log(`Import de ${fareAttributes.length} attributs tarifaires...`)
+    await batchInsert(fareAttributes, batchSize, (chunk) =>
+      prisma.fareAttribute.createMany({
+        data: chunk.map((f) => ({
+          fareId: f.fare_id,
+          price: f.price ? parseFloat(f.price) : null,
+          currencyType: f.currency_type || null,
+          paymentMethod: f.payment_method ? parseInt(f.payment_method, 10) : null,
+          transfers: f.transfers !== undefined && f.transfers !== '' ? parseInt(f.transfers, 10) : null,
+          transferDuration: f.transfer_duration ? parseInt(f.transfer_duration, 10) : null,
+        })),
+      }),
+    )
+    stats.fareAttributes = fareAttributes.length
+  }
+
+  const fareRules = gtfs['fare_rules.txt'] ?? []
+  if (fareRules.length > 0) {
+    log(`Import de ${fareRules.length} règles tarifaires...`)
+    await batchInsert(fareRules, batchSize, (chunk) =>
+      prisma.fareRule.createMany({
+        data: chunk.map((r) => ({
+          fareId: r.fare_id,
+          routeId: r.route_id || null,
+          originId: r.origin_id || null,
+          destinationId: r.destination_id || null,
+          containsId: r.contains_id || null,
+        })),
+      }),
+    )
+    stats.fareRules = fareRules.length
+  }
+
+  const transfers = gtfs['transfers.txt'] ?? []
+  if (transfers.length > 0) {
+    log(`Import de ${transfers.length} correspondances...`)
+    await batchInsert(transfers, batchSize, (chunk) =>
+      prisma.transfer.createMany({
+        data: chunk.map((t) => ({
+          fromStopId: t.from_stop_id,
+          toStopId: t.to_stop_id,
+          transferType: parseInt(t.transfer_type, 10),
+          minTransferTime: t.min_transfer_time ? parseInt(t.min_transfer_time, 10) : null,
+        })),
+      }),
+    )
+    stats.transfers = transfers.length
   }
 
   const routes = gtfs['routes.txt'] ?? []
@@ -89,6 +177,9 @@ export async function importGtfsToDb(
           color: r.route_color || null,
           textColor: r.route_text_color || null,
           sortOrder: r.route_sort_order ? parseInt(r.route_sort_order, 10) : null,
+          extras: extras.routeExtras?.[r.route_id]
+            ? JSON.stringify(extras.routeExtras[r.route_id])
+            : null,
         })),
       }),
     )
