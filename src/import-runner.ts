@@ -45,7 +45,8 @@ export async function runImportInWorker(
 
   return new Promise<string>((resolve, reject) => {
     child = fork(script, [source, triggeredBy, String(force)], {
-      execArgv: ['--max-old-space-size=3072'],
+      // Heap dédié à l’import (stop_times GTFS / XML NeTEx)
+      execArgv: ['--max-old-space-size=4096'],
       env: {
         ...process.env,
         DATABASE_URL: src.databaseUrl,
@@ -143,15 +144,15 @@ export async function runImportInWorker(
 }
 
 /**
- * Worker process : utile pour NeTEx (RAM).
- * GTFS reste inline par défaut — le fork Coolify restait parfois bloqué avant le 1er octet.
+ * Worker process : GTFS + NeTEx en prod (heap 3 Go).
+ * Le process HTTP reste à 512 Mo et ne crash plus sur OOM import.
  */
 export function shouldUseImportWorker(source: DataSource = 'gtfs'): boolean {
   if (process.env.IMPORT_WORKER === '1') return false
   if (process.env.IMPORT_USE_WORKER === 'false') return false
-  if (process.env.IMPORT_USE_WORKER === 'always') return true
-  if (process.env.IMPORT_USE_WORKER === 'true' && source === 'netex') return true
-  // Prod : NeTEx isolé seulement
-  if (process.env.NODE_ENV === 'production' && source === 'netex') return true
-  return false
+  if (process.env.IMPORT_USE_WORKER === 'true' || process.env.IMPORT_USE_WORKER === 'always') {
+    return true
+  }
+  // Prod : toujours isoler les imports
+  return process.env.NODE_ENV === 'production'
 }

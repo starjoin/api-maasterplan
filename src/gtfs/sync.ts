@@ -2,7 +2,7 @@ import { prisma, getActiveSource, getMetaId } from '../db.js'
 import type { DataSource } from '../config.js'
 import { getSourceConfig } from '../config.js'
 import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
-import { importGtfsToDb } from './importer.js'
+import { importGtfsLargeFilesFromDir, importGtfsToDb } from './importer.js'
 import { parseGtfsDirectory } from './parser.js'
 import type { ImportStats } from './types.js'
 import { syncNetex } from '../netex/sync.js'
@@ -39,7 +39,7 @@ export async function syncDataset(
   force = false,
   source: DataSource = getActiveSource(),
 ) {
-  // NeTEx en process enfant (RAM). GTFS inline pour un téléchargement fiable sur Coolify.
+  // NeTEx / GTFS en process enfant en prod (évite OOM du HTTP Coolify à 512 Mo)
   if (shouldUseImportWorker(source)) {
     return runImportInWorker(source, triggeredBy, force)
   }
@@ -116,7 +116,7 @@ export async function syncGtfs(
         data: { status: 'PARSING' },
       })
       setDownloadProgress({ phase: 'parsing', percent: null, etaSeconds: null, speedBps: null })
-      await appendLog(job.id, `Parsing des fichiers ${src.label}...`)
+      await appendLog(job.id, `Parsing des fichiers ${src.label} (léger)…`)
       const gtfs = parseGtfsDirectory(extractDir)
 
       await prisma.importJob.update({
@@ -126,6 +126,7 @@ export async function syncGtfs(
       setDownloadProgress({ phase: 'importing', percent: null, etaSeconds: null, speedBps: null })
 
       const stats = await importGtfsToDb(gtfs, (msg) => appendLog(job.id, msg))
+      await importGtfsLargeFilesFromDir(extractDir, stats, (msg) => appendLog(job.id, msg))
 
       await prisma.datasetMeta.upsert({
         where: { id: metaId },

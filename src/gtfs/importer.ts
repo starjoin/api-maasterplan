@@ -290,6 +290,61 @@ export async function importGtfsToDb(
   return stats
 }
 
+/** Import streaming des gros fichiers (évite OOM Coolify 512 Mo). */
+export async function importGtfsLargeFilesFromDir(
+  extractDir: string,
+  stats: ImportStats,
+  log: LogFn = console.log,
+): Promise<void> {
+  const batchSize = config.IMPORT_BATCH_SIZE
+  const { forEachCsvBatch, gtfsFilePath } = await import('./parser.js')
+
+  const stopTimesPath = gtfsFilePath(extractDir, 'stop_times.txt')
+  if (stopTimesPath) {
+    log('Import streaming stop_times.txt…')
+    let imported = 0
+    stats.stopTimes = await forEachCsvBatch(stopTimesPath, batchSize, async (chunk) => {
+      await prisma.stopTime.createMany({
+        data: chunk.map((st) => ({
+          tripId: st.trip_id,
+          arrivalTime: st.arrival_time,
+          departureTime: st.departure_time,
+          stopId: st.stop_id,
+          stopSequence: parseInt(st.stop_sequence, 10),
+          headsign: st.stop_headsign || null,
+          pickupType: st.pickup_type ? parseInt(st.pickup_type, 10) : null,
+          dropOffType: st.drop_off_type ? parseInt(st.drop_off_type, 10) : null,
+          shapeDistTraveled: st.shape_dist_traveled ? parseFloat(st.shape_dist_traveled) : null,
+          timepoint: st.timepoint ? parseInt(st.timepoint, 10) : null,
+        })),
+      })
+      imported += chunk.length
+      if (imported % 100_000 === 0) log(`  ${imported.toLocaleString('fr-FR')} horaires…`)
+    })
+    log(`  ${stats.stopTimes.toLocaleString('fr-FR')} horaires importés`)
+  }
+
+  const shapesPath = gtfsFilePath(extractDir, 'shapes.txt')
+  if (shapesPath) {
+    log('Import streaming shapes.txt…')
+    let imported = 0
+    stats.shapes = await forEachCsvBatch(shapesPath, batchSize, async (chunk) => {
+      await prisma.shape.createMany({
+        data: chunk.map((s) => ({
+          shapeId: s.shape_id,
+          ptLat: parseFloat(s.shape_pt_lat),
+          ptLon: parseFloat(s.shape_pt_lon),
+          ptSequence: parseInt(s.shape_pt_sequence, 10),
+          distTraveled: s.shape_dist_traveled ? parseFloat(s.shape_dist_traveled) : null,
+        })),
+      })
+      imported += chunk.length
+      if (imported % 100_000 === 0) log(`  ${imported.toLocaleString('fr-FR')} points de tracé…`)
+    })
+    log(`  ${stats.shapes.toLocaleString('fr-FR')} points de tracé importés`)
+  }
+}
+
 async function batchInsert<T>(
   items: T[],
   batchSize: number,
