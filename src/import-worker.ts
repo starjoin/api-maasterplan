@@ -24,10 +24,20 @@ async function main() {
   const src = getSourceConfig(source)
   process.env.DATABASE_URL = src.databaseUrl
 
-  console.log(`[import-worker] Démarrage import ${src.label} (force=${force})`)
-  await bindSourceInProcess(source)
+  const heartbeat = setInterval(() => {
+    try {
+      process.send?.({ type: 'heartbeat', ts: Date.now() })
+    } catch {
+      /* ignore */
+    }
+  }, 10_000)
 
   try {
+    console.log(`[import-worker] Démarrage import ${src.label} (force=${force})`)
+    process.send?.({ type: 'progress', progress: { phase: 'downloading', percent: 0, bytesReceived: 0, bytesTotal: null, speedBps: null, etaSeconds: null, updatedAt: Date.now() } })
+
+    await bindSourceInProcess(source)
+
     if (source === 'netex') {
       const { syncNetex } = await import('./netex/sync.js')
       const jobId = await syncNetex(triggeredBy, force)
@@ -39,13 +49,23 @@ async function main() {
       console.log(`[import-worker] Terminé job=${jobId}`)
       process.send?.({ type: 'done', jobId })
     }
+    clearInterval(heartbeat)
     process.exit(0)
   } catch (err) {
+    clearInterval(heartbeat)
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[import-worker] Échec: ${message}`)
-    process.send?.({ type: 'error', message })
+    if (err instanceof Error && err.stack) console.error(err.stack)
+    try {
+      process.send?.({ type: 'error', message })
+    } catch {
+      /* ignore */
+    }
     process.exit(1)
   }
 }
 
-main()
+main().catch((err) => {
+  console.error('[import-worker] fatal', err)
+  process.exit(1)
+})

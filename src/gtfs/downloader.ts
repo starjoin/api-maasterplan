@@ -14,13 +14,37 @@ type ProgressCb = (info: {
   percent: number | null
 }) => void
 
+const CONNECT_TIMEOUT_MS = 45_000
+const IDLE_TIMEOUT_MS = 120_000
+const MAX_REDIRECTS = 8
+
 function authHeaders(token: string, extra: Record<string, string> = {}): Record<string, string> {
-  // Format documenté Chouette / Enroute
-  return {
-    Authorization: `Token token="${token}"`,
+  const headers: Record<string, string> = {
     Accept: '*/*',
+    'User-Agent': 'maasterplan/1.0',
     ...extra,
   }
+  if (token) {
+    // Format documenté Chouette / Enroute
+    headers.Authorization = `Token token="${token}"`
+  }
+  return headers
+}
+
+/** Ne pas renvoyer le token Enroute vers un CDN/S3 (sinon téléchargement qui pend). */
+function tokenForRedirect(fromUrl: string, toUrl: string, token: string): string {
+  try {
+    const from = new URL(fromUrl)
+    const to = new URL(toUrl, fromUrl)
+    if (from.host === to.host) return token
+  } catch {
+    /* ignore */
+  }
+  return ''
+}
+
+function resolveRedirectUrl(fromUrl: string, location: string): string {
+  return new URL(location, fromUrl).href
 }
 
 function httpErrorMessage(status: number, url: string, source: DataSource): string {
@@ -35,11 +59,30 @@ function httpErrorMessage(status: number, url: string, source: DataSource): stri
   return `HTTP ${status} lors du téléchargement (${url})`
 }
 
+function attachTimeouts(
+  request: http.ClientRequest,
+  reject: (err: Error) => void,
+  label: string,
+): void {
+  request.setTimeout(IDLE_TIMEOUT_MS, () => {
+    request.destroy()
+    reject(new Error(`Timeout inactivité ${label} (${IDLE_TIMEOUT_MS / 1000}s)`))
+  })
+  request.on('socket', (socket) => {
+    socket.setTimeout(CONNECT_TIMEOUT_MS)
+    socket.once('timeout', () => {
+      request.destroy()
+      reject(new Error(`Timeout connexion ${label} (${CONNECT_TIMEOUT_MS / 1000}s)`))
+    })
+  })
+}
+
 export async function fetchRfuInfo(source: DataSource = 'gtfs'): Promise<Record<string, unknown> | null> {
   const src = getSourceConfig(source)
   try {
     return await fetchJson(src.infoUrl, src.token)
-  } catch {
+  } catch (err) {
+    console.warn(`[RFU] info ${source} indisponible:`, err instanceof Error ? err.message : err)
     return null
   }
 }
@@ -67,6 +110,7 @@ export async function downloadAndExtract(
   const zipName = source === 'netex' ? 'netex.zip' : 'gtfs.zip'
   const zipPath = path.join(tmpDir, zipName)
 
+  console.log(`[Download] ${source} → ${src.zipUrl}`)
   setDownloadProgress({
     phase: 'downloading',
     percent: 0,
@@ -82,6 +126,9 @@ export async function downloadAndExtract(
       ...info,
     })
   })
+
+  const zipSize = fs.statSync(zipPath).size
+  console.log(`[Download] OK ${zipName} (${(zipSize / (1024 * 1024)).toFixed(1)} Mo)`)
 
   setDownloadProgress({
     phase: 'extracting',
@@ -112,21 +159,27 @@ export function cleanupTmp(jobId: string): void {
   fs.rmSync(tmpDir, { recursive: true, force: true })
 }
 
-function fetchJson(url: string, token: string): Promise<Record<string, unknown>> {
+function fetchJson(url: string, token: string, redirects = 0): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const proto = url.startsWith('https') ? https : http
+    if (redirects > MAX_REDIRECTS) return reject(new Error('Trop de redirections'))
 
+    const proto = url.startsWith('https') ? https : http
     const request = proto.get(url, { headers: authHeaders(token) }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchJson(res.headers.location, token).then(resolve).catch(reject)
+        const next = resolveRedirectUrl(url, res.headers.location)
+        const nextToken = tokenForRedirect(url, next, token)
+        res.resume()
+        return fetchJson(next, nextToken, redirects + 1).then(resolve).catch(reject)
       }
 
       if (res.statusCode !== 200) {
+        res.resume()
         return reject(new Error(`HTTP ${res.statusCode} sur ${url}`))
       }
 
       const contentType = res.headers['content-type'] ?? ''
       if (!contentType.includes('json')) {
+        res.resume()
         return reject(new Error('Réponse non-JSON'))
       }
 
@@ -142,10 +195,7 @@ function fetchJson(url: string, token: string): Promise<Record<string, unknown>>
     })
 
     request.on('error', reject)
-    request.setTimeout(30_000, () => {
-      request.destroy()
-      reject(new Error(`Timeout RFU info : ${url}`))
-    })
+    attachTimeouts(request, reject, `RFU info ${url}`)
   })
 }
 
@@ -156,17 +206,20 @@ function headRequest(
   source: DataSource = 'gtfs',
 ): Promise<{ etag?: string; lastModified?: string }> {
   return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('Trop de redirections'))
+    if (redirects > MAX_REDIRECTS) return reject(new Error('Trop de redirections'))
 
     const proto = url.startsWith('https') ? https : http
     const request = proto.request(url, { method: 'HEAD', headers: authHeaders(token) }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return headRequest(res.headers.location, token, redirects + 1, source)
-          .then(resolve)
-          .catch(reject)
+        const next = resolveRedirectUrl(url, res.headers.location)
+        const nextToken = tokenForRedirect(url, next, token)
+        res.resume()
+        return headRequest(next, nextToken, redirects + 1, source).then(resolve).catch(reject)
       }
 
+      // Certains CDN refusent HEAD → on n’échoue pas durement (métadonnées optionnelles)
       if (res.statusCode !== 200) {
+        res.resume()
         return reject(new Error(httpErrorMessage(res.statusCode ?? 0, url, source)))
       }
 
@@ -177,10 +230,7 @@ function headRequest(
     })
 
     request.on('error', reject)
-    request.setTimeout(30_000, () => {
-      request.destroy()
-      reject(new Error(`Timeout HEAD ${url}`))
-    })
+    attachTimeouts(request, reject, `HEAD ${url}`)
     request.end()
   })
 }
@@ -194,24 +244,44 @@ function downloadFile(
   onProgress?: ProgressCb,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error('Trop de redirections'))
+    if (redirects > MAX_REDIRECTS) return reject(new Error('Trop de redirections'))
 
     const proto = url.startsWith('https') ? https : http
     const file = fs.createWriteStream(dest)
+    let settled = false
+
+    const fail = (err: Error) => {
+      if (settled) return
+      settled = true
+      file.close(() => {
+        fs.unlink(dest, () => reject(err))
+      })
+    }
+
+    const succeed = () => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
 
     const request = proto.get(url, { headers: authHeaders(token) }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        const next = resolveRedirectUrl(url, res.headers.location)
+        const nextToken = tokenForRedirect(url, next, token)
+        console.log(`[Download] redirect ${res.statusCode} → ${nextHost(next)} (auth=${nextToken ? 'oui' : 'non'})`)
+        res.resume()
         file.close()
-        fs.unlinkSync(dest)
-        return downloadFile(res.headers.location, dest, token, redirects + 1, source, onProgress)
-          .then(resolve)
-          .catch(reject)
+        fs.unlink(dest, () => {
+          downloadFile(next, dest, nextToken, redirects + 1, source, onProgress)
+            .then(succeed)
+            .catch(fail)
+        })
+        return
       }
 
       if (res.statusCode !== 200) {
-        file.close()
-        fs.unlinkSync(dest)
-        return reject(new Error(httpErrorMessage(res.statusCode ?? 0, url, source)))
+        res.resume()
+        return fail(new Error(httpErrorMessage(res.statusCode ?? 0, url, source)))
       }
 
       const totalHeader = res.headers['content-length']
@@ -235,6 +305,8 @@ function downloadFile(
         onProgress?.({ bytesReceived, bytesTotal, speedBps, etaSeconds, percent })
       }
 
+      emit(true)
+
       res.on('data', (chunk: Buffer) => {
         bytesReceived += chunk.length
         emit()
@@ -243,22 +315,21 @@ function downloadFile(
       res.pipe(file)
       file.on('finish', () => {
         emit(true)
-        file.close(() => resolve())
+        file.close(() => succeed())
       })
-      file.on('error', (err) => {
-        fs.unlinkSync(dest)
-        reject(err)
-      })
+      file.on('error', (err) => fail(err))
+      res.on('error', (err) => fail(err))
     })
 
-    request.on('error', (err) => {
-      fs.unlinkSync(dest)
-      reject(err)
-    })
-
-    request.setTimeout(600_000, () => {
-      request.destroy()
-      reject(new Error('Timeout téléchargement archive'))
-    })
+    request.on('error', (err) => fail(err))
+    attachTimeouts(request, fail, `GET ${url}`)
   })
+}
+
+function nextHost(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
 }

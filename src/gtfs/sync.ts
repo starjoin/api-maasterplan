@@ -39,8 +39,8 @@ export async function syncDataset(
   force = false,
   source: DataSource = getActiveSource(),
 ) {
-  // Process enfant en prod : le parse NeTEx ne doit pas tuer le serveur HTTP Coolify
-  if (shouldUseImportWorker()) {
+  // NeTEx en process enfant (RAM). GTFS inline pour un téléchargement fiable sur Coolify.
+  if (shouldUseImportWorker(source)) {
     return runImportInWorker(source, triggeredBy, force)
   }
   if (source === 'netex') {
@@ -100,7 +100,15 @@ export async function syncGtfs(
         return job.id
       }
 
-      await appendLog(job.id, `Téléchargement ${src.label} depuis le RFU...`)
+      await appendLog(job.id, `Téléchargement ${src.label} depuis ${src.zipUrl}…`)
+      setDownloadProgress({
+        phase: 'downloading',
+        percent: 0,
+        bytesReceived: 0,
+        bytesTotal: null,
+        speedBps: null,
+        etaSeconds: null,
+      })
       const extractDir = await downloadAndExtract(job.id, source)
 
       await prisma.importJob.update({

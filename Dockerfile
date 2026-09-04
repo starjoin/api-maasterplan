@@ -28,6 +28,7 @@ ENV PORT=3000
 # Serveur HTTP léger ; le worker d’import a son propre --max-old-space-size=3072
 ENV NODE_OPTIONS=--max-old-space-size=512
 ENV IMPORT_USE_WORKER=true
+# true = worker pour NeTEx seulement (GTFS reste dans le process HTTP, plus fiable)
 ENV TMP_DIR=/tmp/maasterplan
 
 RUN mkdir -p /app/data

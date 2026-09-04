@@ -1,4 +1,4 @@
-import { fork } from 'node:child_process'
+import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { DataSource } from './config.js'
@@ -12,13 +12,14 @@ import {
 } from './import-state.js'
 
 function workerScript(): string {
-  // Toujours résoudre depuis cwd (Docker WORKDIR=/app, dist/ à la racine)
   return path.resolve(process.cwd(), 'dist', 'import-worker.js')
 }
 
+const WORKER_STALL_MS = 180_000
+
 /**
- * Lance l’import dans un process enfant.
- * Le serveur HTTP parent reste responsive (pas de freeze / OOM partagé).
+ * Lance l’import dans un process enfant (surtout NeTEx).
+ * Le serveur HTTP parent reste responsive.
  */
 export async function runImportInWorker(
   source: DataSource,
@@ -35,18 +36,21 @@ export async function runImportInWorker(
   }
 
   setImportRunning(true)
-  setDownloadProgress({ phase: 'downloading', percent: 0 })
+  // Pas de faux "downloading" : on attend le 1er message worker
+  setDownloadProgress({ phase: 'idle', percent: null })
 
   const src = getSourceConfig(source)
+  let lastBeat = Date.now()
+  let child: ChildProcess | null = null
 
   return new Promise<string>((resolve, reject) => {
-    const child = fork(script, [source, triggeredBy, String(force)], {
-      // Ne pas hériter du --max-old-space-size=512 du serveur HTTP
+    child = fork(script, [source, triggeredBy, String(force)], {
       execArgv: ['--max-old-space-size=3072'],
       env: {
         ...process.env,
         DATABASE_URL: src.databaseUrl,
         IMPORT_WORKER: '1',
+        IMPORT_SKIP_MIGRATE: '1',
         NODE_OPTIONS: '',
       },
       stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
@@ -55,16 +59,33 @@ export async function runImportInWorker(
     let settled = false
     let jobId: string | null = null
 
+    const watchdog = setInterval(() => {
+      if (settled) return
+      if (Date.now() - lastBeat > WORKER_STALL_MS) {
+        console.error(`[import-runner] Worker ${source} sans activité > ${WORKER_STALL_MS / 1000}s — kill`)
+        child?.kill('SIGTERM')
+        finish(new Error(`Import ${src.label} bloqué (aucune activité ${WORKER_STALL_MS / 1000}s)`))
+      }
+    }, 15_000)
+
     const finish = (err?: Error) => {
       if (settled) return
       settled = true
+      clearInterval(watchdog)
       setImportRunning(false)
       setDownloadProgress({ phase: 'idle', percent: null })
       if (err) reject(err)
       else resolve(jobId ?? 'unknown')
     }
 
+    child.on('spawn', () => {
+      lastBeat = Date.now()
+      console.log(`[import-runner] Worker ${source} démarré pid=${child?.pid}`)
+      setDownloadProgress({ phase: 'downloading', percent: 0 })
+    })
+
     child.on('message', (msg: unknown) => {
+      lastBeat = Date.now()
       if (!msg || typeof msg !== 'object') return
       const m = msg as {
         type?: string
@@ -72,6 +93,7 @@ export async function runImportInWorker(
         message?: string
         progress?: DownloadProgress
       }
+      if (m.type === 'heartbeat') return
       if (m.type === 'progress' && m.progress) {
         setDownloadProgress(m.progress)
       }
@@ -120,10 +142,16 @@ export async function runImportInWorker(
   })
 }
 
-export function shouldUseImportWorker(): boolean {
+/**
+ * Worker process : utile pour NeTEx (RAM).
+ * GTFS reste inline par défaut — le fork Coolify restait parfois bloqué avant le 1er octet.
+ */
+export function shouldUseImportWorker(source: DataSource = 'gtfs'): boolean {
   if (process.env.IMPORT_WORKER === '1') return false
   if (process.env.IMPORT_USE_WORKER === 'false') return false
-  if (process.env.IMPORT_USE_WORKER === 'true') return true
-  // Coolify / Docker : toujours isoler. En local tsx : inline (worker = dist/).
-  return process.env.NODE_ENV === 'production'
+  if (process.env.IMPORT_USE_WORKER === 'always') return true
+  if (process.env.IMPORT_USE_WORKER === 'true' && source === 'netex') return true
+  // Prod : NeTEx isolé seulement
+  if (process.env.NODE_ENV === 'production' && source === 'netex') return true
+  return false
 }

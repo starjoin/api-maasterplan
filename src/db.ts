@@ -101,7 +101,12 @@ export async function initDatabase(databaseUrl = getSourceConfig(activeSource).d
     fs.renameSync(legacy, gtfsPath)
   }
 
-  migrateDatabase(databaseUrl)
+  // Worker d’import : migrations déjà faites par l’entrypoint / le process HTTP
+  if (process.env.IMPORT_SKIP_MIGRATE !== '1') {
+    migrateDatabase(databaseUrl)
+  } else {
+    ensureDbFile(databaseUrl)
+  }
 
   process.env.DATABASE_URL = databaseUrl
   await prismaRef.$connect()
