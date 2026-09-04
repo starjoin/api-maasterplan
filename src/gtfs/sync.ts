@@ -7,6 +7,7 @@ import { parseGtfsDirectory } from './parser.js'
 import type { ImportStats } from './types.js'
 import { syncNetex } from '../netex/sync.js'
 import { isImportRunning, setImportRunning, setDownloadProgress } from '../import-state.js'
+import { runImportInWorker, shouldUseImportWorker } from '../import-runner.js'
 
 export { isImportRunning, setImportRunning }
 
@@ -38,6 +39,10 @@ export async function syncDataset(
   force = false,
   source: DataSource = getActiveSource(),
 ) {
+  // Process enfant en prod : le parse NeTEx ne doit pas tuer le serveur HTTP Coolify
+  if (shouldUseImportWorker()) {
+    return runImportInWorker(source, triggeredBy, force)
+  }
   if (source === 'netex') {
     return syncNetex(triggeredBy, force)
   }
@@ -53,7 +58,8 @@ export async function syncGtfs(
     throw new Error('Un import est déjà en cours')
   }
 
-  if (source !== getActiveSource()) {
+  const skipActiveCheck = process.env.IMPORT_WORKER === '1'
+  if (!skipActiveCheck && source !== getActiveSource()) {
     throw new Error('Activez la source GTFS avant d’importer')
   }
 

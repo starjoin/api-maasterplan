@@ -171,6 +171,7 @@ export async function importRoutes(app: FastifyInstance) {
       }
 
       const label = getSourceConfig(source).label
+      // Toujours via syncDataset (worker en prod) pour ne pas figer/tuer le HTTP
       syncDataset('manual', force, source).catch((err) => {
         app.log.error(err, `Import ${label} échoué`)
       })
@@ -191,6 +192,7 @@ export async function importRoutes(app: FastifyInstance) {
       await reloadEndpoints(app)
     }
 
+    // Chemin local : inline (pas de worker) — usage dev / debug
     const { syncNetex } = await import('../netex/sync.js')
     syncNetex('manual', true, dir).catch((err) => {
       app.log.error(err, 'Import NeTEx local échoué')

@@ -173,6 +173,26 @@ export async function setActiveSource(source: DataSource): Promise<DataSource> {
   return activeSource
 }
 
+/**
+ * Bind Prisma à une source sans écrire app-settings.json.
+ * Utilisé par le process worker d’import (ne doit pas changer la source UI du serveur HTTP).
+ */
+export async function bindSourceInProcess(source: DataSource): Promise<DataSource> {
+  const { databaseUrl } = getSourceConfig(source)
+  if (source === activeSource && process.env.DATABASE_URL === databaseUrl) {
+    await initDatabase(databaseUrl)
+    return activeSource
+  }
+
+  await prismaRef.$disconnect().catch(() => undefined)
+  activeSource = source
+  process.env.DATABASE_URL = databaseUrl
+  prismaRef = createClient(databaseUrl)
+  prisma = prismaRef
+  await initDatabase(databaseUrl)
+  return activeSource
+}
+
 export async function withSourcePrisma<T>(
   source: DataSource,
   fn: (client: PrismaClient) => Promise<T>,

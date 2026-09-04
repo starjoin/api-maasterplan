@@ -42,6 +42,14 @@ export function setDownloadProgress(partial: Partial<DownloadProgress>) {
     ...partial,
     updatedAt: Date.now(),
   }
+  // Remonter la progression au process HTTP parent (worker d’import)
+  if (process.env.IMPORT_WORKER === '1' && typeof process.send === 'function') {
+    try {
+      process.send({ type: 'progress', progress: { ...downloadProgress } })
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 export function clearDownloadProgress() {

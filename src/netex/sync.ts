@@ -1,9 +1,8 @@
 import { prisma, getActiveSource, getMetaId } from '../db.js'
 import { getSourceConfig } from '../config.js'
 import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
-import { importGtfsToDb } from '../gtfs/importer.js'
 import { isImportRunning, setImportRunning, setDownloadProgress } from '../import-state.js'
-import { buildNetexDataset } from './parser.js'
+import { importNetexExtractDir } from './import-pipeline.js'
 
 function extractRfuTimestamp(info: Record<string, unknown>): string | null {
   const candidates = [
@@ -24,7 +23,7 @@ async function appendLog(jobId: string, message: string) {
   if (!job) return
   const logs = JSON.parse(job.logs) as string[]
   logs.push(`[${new Date().toISOString()}] ${message}`)
-  await prisma.importJob.update({ where: { id: jobId }, data: { logs: JSON.stringify(logs) } })
+  await prisma.importJob.update({ where: { id: job.id }, data: { logs: JSON.stringify(logs) } })
 }
 
 export async function syncNetex(
@@ -35,7 +34,9 @@ export async function syncNetex(
   if (isImportRunning()) {
     throw new Error('Un import est déjà en cours')
   }
-  if (getActiveSource() !== 'netex') {
+  // Le worker fixe activeSource en mémoire ; le serveur HTTP peut rester sur une autre source
+  const skipActiveCheck = process.env.IMPORT_WORKER === '1'
+  if (!skipActiveCheck && getActiveSource() !== 'netex') {
     throw new Error('Activez la source NeTEx avant d’importer')
   }
 
@@ -82,18 +83,11 @@ export async function syncNetex(
       rfuVersion = 'local'
     }
 
-    await prisma.importJob.update({ where: { id: job.id }, data: { status: 'PARSING' } })
-    setDownloadProgress({ phase: 'parsing', percent: null, etaSeconds: null, speedBps: null })
-    await appendLog(job.id, 'Parsing NeTEx…')
-    const dataset = buildNetexDataset(extractDir, (msg) => appendLog(job.id, msg))
-
     await prisma.importJob.update({ where: { id: job.id }, data: { status: 'IMPORTING' } })
-    setDownloadProgress({ phase: 'importing', percent: null, etaSeconds: null, speedBps: null })
-    const stats = await importGtfsToDb(dataset, (msg) => appendLog(job.id, msg), {
-      routeExtras: dataset.routeExtras,
-      stopExtras: dataset.stopExtras,
-      fareZoneExtras: dataset.fareZoneExtras,
-    })
+    setDownloadProgress({ phase: 'importing', percent: 0, etaSeconds: null, speedBps: null })
+    await appendLog(job.id, 'Parsing + import NeTEx incrémental (fichier par fichier)…')
+
+    const stats = await importNetexExtractDir(extractDir, (msg) => appendLog(job.id, msg))
 
     await prisma.datasetMeta.upsert({
       where: { id: metaId },
@@ -127,11 +121,13 @@ export async function syncNetex(
     return job.id
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    await appendLog(job.id, `Erreur : ${message}`)
-    await prisma.importJob.update({
-      where: { id: job.id },
-      data: { status: 'FAILED', completedAt: new Date(), errorMessage: message },
-    })
+    await appendLog(job.id, `Erreur : ${message}`).catch(() => undefined)
+    await prisma.importJob
+      .update({
+        where: { id: job.id },
+        data: { status: 'FAILED', completedAt: new Date(), errorMessage: message },
+      })
+      .catch(() => undefined)
     if (!extractDirOverride) cleanupTmp(job.id)
     throw err
   } finally {

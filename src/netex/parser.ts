@@ -152,7 +152,11 @@ function findAll(doc: unknown, tag: string): Record<string, unknown>[] {
 
 export function parseNetexFile(filePath: string): unknown {
   const xml = fs.readFileSync(filePath, 'utf8')
-  return parser.parse(xml)
+  try {
+    return parser.parse(xml)
+  } finally {
+    // xml tombe hors scope — aide le GC sur les gros fichiers Coolify
+  }
 }
 
 function firstFareZoneId(node: Record<string, unknown>): string | undefined {
