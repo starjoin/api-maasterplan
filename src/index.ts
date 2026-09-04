@@ -23,6 +23,11 @@ async function main() {
   await initDatabase()
   console.log(`[DB] Connecté (${getActiveSource()} / SQLite WAL)`)
 
+  // Écouter tôt : Coolify / Traefik healthcheck → évite 503 pendant le seed
+  const app = await buildServer()
+  const port = await listenDynamic(app, config.PORT, config.HOST)
+  console.log(`[Server] http://${config.HOST === '0.0.0.0' ? 'localhost' : config.HOST}:${port}`)
+
   console.log('[Seed] Synchronisation du catalogue SAE / Designer...')
   await seedDefaultEndpoints(prisma, getActiveSource())
   for (const source of DATA_SOURCES) {
@@ -32,7 +37,6 @@ async function main() {
     })
   }
 
-  const app = await buildServer()
   startScheduler(app)
   startVehicleMonitoringPoller(app.log)
 
@@ -78,9 +82,6 @@ async function main() {
       console.log(`[Import] ${stuck.count} job(s) interrompu(s) marqué(s) FAILED`)
     }
   }
-
-  const port = await listenDynamic(app, config.PORT, config.HOST)
-  console.log(`[Server] http://${config.HOST === '0.0.0.0' ? 'localhost' : config.HOST}:${port}`)
 }
 
 main().catch((err) => {

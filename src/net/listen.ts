@@ -30,8 +30,10 @@ export async function findFreePort(
 }
 
 /**
- * Écoute Fastify sur `preferredPort`, ou le prochain libre si occupé.
- * En cas de EADDRINUSE « flash » (tsx watch), retente d’abord le même port.
+ * Écoute Fastify sur `preferredPort`.
+ * En production (Coolify / Docker) : port fixe uniquement — jamais de bascule,
+ * sinon le proxy/healthcheck pointe vers un mauvais port → 503.
+ * En dev : retries puis prochain port libre (tsx watch).
  */
 export async function listenDynamic(
   app: FastifyInstance,
@@ -43,7 +45,13 @@ export async function listenDynamic(
     return port
   }
 
-  // Retries courts sur le port préféré (relance watch)
+  const isProd = process.env.NODE_ENV === 'production'
+
+  if (isProd) {
+    await tryListen(preferredPort)
+    return preferredPort
+  }
+
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return await tryListen(preferredPort)

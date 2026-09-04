@@ -55,11 +55,22 @@ const migratedUrls = new Set<string>()
 function migrateDatabase(databaseUrl: string) {
   if (migratedUrls.has(databaseUrl)) return
   ensureDbFile(databaseUrl)
-  execSync('npx prisma migrate deploy', {
-    cwd: process.cwd(),
-    env: { ...process.env, DATABASE_URL: databaseUrl },
-    stdio: 'pipe',
-  })
+  try {
+    execSync('npx prisma migrate deploy', {
+      cwd: process.cwd(),
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+      stdio: 'pipe',
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const stderr =
+      err && typeof err === 'object' && 'stderr' in err
+        ? String((err as { stderr?: Buffer | string }).stderr ?? '')
+        : ''
+    throw new Error(
+      `Migration Prisma échouée pour ${databaseUrl}: ${msg}${stderr ? `\n${stderr}` : ''}`,
+    )
+  }
   migratedUrls.add(databaseUrl)
 }
 

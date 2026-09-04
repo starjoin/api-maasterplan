@@ -7,6 +7,8 @@ services:
       - .env.local
     environment:
       - DATABASE_URL=file:/app/data/maasterplan.db
+      - DATABASE_URL_GTFS=file:/app/data/maasterplan.db
+      - DATABASE_URL_NETEX=file:/app/data/netex.db
       - HOST=0.0.0.0
       - PORT=3000
       - NODE_ENV=production
@@ -14,11 +16,11 @@ services:
       - maasterplan_data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 30s
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 120s
 
 volumes:
   maasterplan_data:
