@@ -6,6 +6,8 @@ L’API sert une version publiée pendant qu’un processus séparé prépare la
 
 Utiliser le Dockerfile ou le Compose fourni. Conserver **un volume persistant `/app/data`** et une seule instance de l’application : les fichiers SQLite et le verrou d’import ne sont pas conçus pour plusieurs réplicas. Les URL des bases GTFS et NeTEx doivent être distinctes. Les chemins historiques `maasterplan.db` et `netex.db` restent compatibles.
 
+Le Dockerfile ne contient pas de directive `VOLUME`. Cette omission est volontaire : sans montage fourni par Coolify, Docker créerait un volume anonyme neuf à chaque remplacement de conteneur et le présenterait comme un montage valide. En production, `REQUIRE_PERSISTENT_STORAGE=true` refuse désormais de démarrer si `/app/data` n’est pas un montage explicite. Un rolling update mal configuré échoue donc sans remplacer le conteneur encore en service par une base vide.
+
 Configurer `RFU_API_TOKEN` et, si nécessaire, `RFU_API_TOKEN_NETEX`. Les variables définies par Coolify priment sur `.env.local`. Ne pas copier de `.env.local` dans l’image.
 
 | Réglage | Valeur fournie |
