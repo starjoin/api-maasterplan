@@ -8,6 +8,8 @@ Utiliser le Dockerfile ou le Compose fourni. Conserver **un volume persistant `/
 
 Le Dockerfile ne contient pas de directive `VOLUME`. Cette omission est volontaire : sans montage fourni par Coolify, Docker créerait un volume anonyme neuf à chaque remplacement de conteneur et le présenterait comme un montage valide. En production, `REQUIRE_PERSISTENT_STORAGE=true` refuse désormais de démarrer si `/app/data` n’est pas un montage explicite. Un rolling update mal configuré échoue donc sans remplacer le conteneur encore en service par une base vide.
 
+Au démarrage, l’application lit d’abord `_prisma_migrations`. Si les migrations présentes dans l’image sont déjà appliquées, elle ne lance pas `prisma migrate deploy` : cela évite de demander un verrou SQLite exclusif pendant que l’ancien conteneur termine le rolling update. Un déploiement qui ajoute réellement une migration de schéma doit être effectué sans chevauchement des deux conteneurs, ou pendant une courte fenêtre de maintenance.
+
 Configurer `RFU_API_TOKEN` et, si nécessaire, `RFU_API_TOKEN_NETEX`. Les variables définies par Coolify priment sur `.env.local`. Ne pas copier de `.env.local` dans l’image.
 
 | Réglage | Valeur fournie |

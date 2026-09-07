@@ -3,6 +3,8 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
+const { promisify } = require('node:util')
+const { execFile } = require('node:child_process')
 
 test('isolated imports, availability, fidelity, failures and persisted publication', { timeout: 120000 }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'maasterplan-test-'))
@@ -152,11 +154,19 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     await db.prisma.importJob.update({where:{id:published.jobId},data:{status:'VALIDATING'}})
     await db.recoverImports('netex')
     assert.equal((await db.prisma.importJob.findUnique({where:{id:published.jobId}})).status,'COMPLETED')
+
+    // Un nouveau conteneur Coolify doit pouvoir vérifier les migrations pendant
+    // que l'ancien détient encore un verrou d'écriture sur la base partagée.
+    const migrationCheck = await db.prisma.$transaction(async tx => {
+      await tx.$executeRawUnsafe('UPDATE DatasetMeta SET format = format')
+      return promisify(execFile)(process.execPath, ['-e', "const db=require('./dist/db.js'); db.migrateDatabase(process.env.DATABASE_URL_NETEX).then(()=>console.log('ready')).catch(e=>{console.error(e);process.exit(1)})"], {env:process.env, timeout:10000})
+    }, {timeout:15000})
+    assert.match(migrationCheck.stdout, /ready/)
+    assert.match(migrationCheck.stdout, /Migrations déjà appliquées/)
+
     await db.disconnectDatabases()
-    const { promisify } = require('node:util')
-    const { execFile } = require('node:child_process')
     const restarted = await promisify(execFile)(process.execPath, ['-e', "const db=require('./dist/db.js'); db.initDatabase().then(async()=>{console.log(JSON.stringify({source:db.getActiveSource(),trips:await db.prisma.trip.count()})); await db.disconnectDatabases()}).catch(e=>{console.error(e);process.exit(1)})"], {env:process.env})
-    assert.deepEqual(JSON.parse(restarted.stdout.trim()),{source:'netex',trips:1})
+    assert.deepEqual(JSON.parse(restarted.stdout.trim().split('\n').at(-1)),{source:'netex',trips:1})
 
   } finally {
     unblock?.()

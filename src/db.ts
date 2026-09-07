@@ -59,9 +59,50 @@ export async function configureClient(client: PrismaClient) {
   await client.$queryRawUnsafe('PRAGMA busy_timeout = 5000')
 }
 const migrations = new Map<string, Promise<void>>()
+
+function expectedMigrationNames() {
+  const root = path.resolve('prisma/migrations')
+  return fs.readdirSync(root, { withFileTypes: true })
+    .filter(entry => entry.isDirectory() && fs.existsSync(path.join(root, entry.name, 'migration.sql')))
+    .map(entry => entry.name)
+    .sort()
+}
+
+/**
+ * Prisma Migrate prend un verrou d'écriture même si aucune migration ne reste.
+ * Pendant un rolling update Coolify, l'ancien conteneur utilise encore SQLite :
+ * une simple lecture de la table Prisma évite ce verrou inutile.
+ */
+async function databaseAlreadyMigrated(url: string) {
+  const filename = fileUrlToPath(url)
+  if (!fs.existsSync(filename) || fs.statSync(filename).size === 0) return false
+  const client = createClient(url)
+  try {
+    const rows = await client.$queryRawUnsafe<Array<{
+      migration_name: string
+      finished_at: Date | string | null
+      rolled_back_at: Date | string | null
+    }>>('SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations')
+    const applied = new Set(
+      rows
+        .filter(row => row.finished_at != null && row.rolled_back_at == null)
+        .map(row => row.migration_name),
+    )
+    return expectedMigrationNames().every(name => applied.has(name))
+  } catch {
+    return false
+  } finally {
+    await client.$disconnect()
+  }
+}
+
 export async function migrateDatabase(url: string) {
   if (!migrations.has(url)) migrations.set(url, (async () => {
     fs.mkdirSync(path.dirname(fileUrlToPath(url)), { recursive: true })
+    if (await databaseAlreadyMigrated(url)) {
+      console.log(`[DB] Migrations déjà appliquées : ${path.basename(fileUrlToPath(url))}`)
+      return
+    }
     // Explicit creation avoids Prisma 5 schema-engine failures on an absent SQLite file.
     fs.closeSync(fs.openSync(fileUrlToPath(url), 'a'))
     await exec(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], {
