@@ -3,7 +3,7 @@ import { config } from '../config.js'
 import { indexNetexDirectory } from '../inventory.js'
 import { importGtfsToDb } from '../gtfs/importer.js'
 import { parseStopsFile, parsePoiFile, parseFareFile, parseOperatorsFile, parseNetworkFile, parseLineFile } from './parser.js'
-import { setDownloadProgress } from '../import-state.js'
+import { reportImportActivity, setDownloadProgress } from '../import-state.js'
 import { EMPTY_STATS } from './types.js'
 import type { GtfsFiles, ImportStats } from '../gtfs/types.js'
 
@@ -43,6 +43,38 @@ export async function importNetexExtractDir(dir: string, log: (message: string) 
   cache.clear()
   await indexNetexDirectory(dir, log)
   const stats = { ...EMPTY_STATS }
+  const projectedKinds = ['StopPlace', 'PointOfInterest', 'FareZone', 'Operator', 'Network', 'Line', 'Quay', 'PassengerStopAssignment', 'DayTypeAssignment', 'ServiceJourney']
+  const kindCounts = await prisma.sourceKind.findMany({
+    where: { kind: { in: projectedKinds } },
+    select: { kind: true, count: true },
+  })
+  const totals = new Map(kindCounts.map((entry) => [entry.kind, entry.count]))
+  const totalEntities = projectedKinds.reduce((sum, kind) => sum + (totals.get(kind) ?? 0), 0)
+  let processedEntities = 0
+  const updateProjection = (kind: string, currentItem: string | null, detail: string, activity?: string) => {
+    processedEntities++
+    const partial = {
+      phase: 'importing' as const,
+      phasePercent: totalEntities ? (processedEntities / totalEntities) * 100 : 100,
+      detail,
+      currentItem,
+      processed: processedEntities,
+      total: totalEntities,
+      unit: 'entités',
+      counters: netexCounters(stats),
+    }
+    if (activity) reportImportActivity(activity, partial)
+    else setDownloadProgress(partial)
+  }
+  reportImportActivity(`Projection NeTEx démarrée : ${formatCount(totalEntities)} entités à examiner`, {
+    phase: 'importing',
+    phasePercent: 0,
+    detail: 'Construction des arrêts, POI, lignes, courses et horaires',
+    processed: 0,
+    total: totalEntities,
+    unit: 'entités',
+    counters: netexCounters(stats),
+  })
   async function insert(files: GtfsFiles, extras = {}) {
     for (const [file, [model, column, field]] of Object.entries(tables)) {
       const rows = (files as any)[file] as Node[] | undefined
@@ -58,6 +90,13 @@ export async function importNetexExtractDir(dir: string, log: (message: string) 
   }
   for (const kind of ['StopPlace', 'PointOfInterest', 'FareZone', 'Operator', 'Network', 'Line']) {
     await log(`Projection ${kind}…`)
+    if (kind === 'PointOfInterest') {
+      reportImportActivity(`Construction de la liste des POI : ${formatCount(totals.get(kind) ?? 0)} élément(s) trouvé(s)`, {
+        phase: 'importing',
+        currentItem: 'PointOfInterest',
+        counters: netexCounters(stats),
+      })
+    }
     for await (const { node } of records(kind)) {
       const doc = { [kind]: node }
       if (kind === 'StopPlace' || kind === 'PointOfInterest') {
@@ -72,24 +111,52 @@ export async function importNetexExtractDir(dir: string, log: (message: string) 
         const parsed = parseLineFile('', doc)
         await insert({ 'routes.txt': parsed.routes }, { routeExtras: parsed.routeExtras })
       }
+      const id = text(node.PublicCode) || text(node.Name) || node['@_id'] || kind
+      const activity =
+        kind === 'Line'
+          ? `Ligne ajoutée : ${id}`
+          : kind === 'PointOfInterest'
+            ? `POI ajouté : ${id}`
+            : kind === 'StopPlace'
+              ? `Zone d’arrêt ajoutée : ${id}`
+              : undefined
+      updateProjection(
+        kind,
+        String(id),
+        `${formatCount(processedEntities + 1)}/${formatCount(totalEntities)} entités — ${statsSummary(stats)}`,
+        activity,
+      )
+    }
+    if (kind === 'PointOfInterest') {
+      reportImportActivity(`Liste des POI construite : ${formatCount(stats.pois)} POI ajouté(s)`, {
+        phase: 'importing',
+        currentItem: null,
+        counters: netexCounters(stats),
+      })
     }
   }
   // Standalone Quays are valid too (not only Quays nested inside a StopPlace).
   for await (const { node } of records('Quay')) {
     const id = node['@_id']
-    if (await prisma.stop.findUnique({ where: { stopId: id }, select: { id: true } })) continue
+    if (await prisma.stop.findUnique({ where: { stopId: id }, select: { id: true } })) {
+      updateProjection('Quay', String(id), `Quai déjà importé avec sa zone d’arrêt — ${statsSummary(stats)}`)
+      continue
+    }
     const loc = node.Centroid?.Location ?? node.Location
     await insert({ 'stops.txt': [{ stop_id: id, stop_name: text(node.Name) ?? id, stop_lat: text(loc?.Latitude), stop_lon: text(loc?.Longitude), location_type: '0', parent_station: ref(node.StopPlaceRef) }] }, { stopExtras: { [id]: { netex_type: 'Quay' } } })
+    updateProjection('Quay', String(text(node.Name) ?? id), `Quai ajouté — ${statsSummary(stats)}`)
   }
   for await (const { node } of records('PassengerStopAssignment')) {
     const key = ref(node.ScheduledStopPointRef)
     const value = ref(node.QuayRef) ?? ref(node.StopPlaceRef)
     if (key && value) await prisma.netexReference.upsert({ where: { key }, create: { key, value }, update: { value } })
+    updateProjection('PassengerStopAssignment', key ?? null, 'Association entre point planifié et arrêt enregistrée')
   }
   // Index calendar assignments by DayType without retaining all dates in RAM.
   for await (const row of records('DayTypeAssignment')) {
     const key = ref(row.node.DayTypeRef)
     if (key) await prisma.netexReference.create({ data: { key: `day:${key}:${row.id}`, value: row.data } })
+    updateProjection('DayTypeAssignment', key ?? null, 'Affectation de calendrier indexée')
   }
   let journeys = 0
   for await (const row of records('ServiceJourney')) {
@@ -120,11 +187,50 @@ export async function importNetexExtractDir(dir: string, log: (message: string) 
       await projectCalendar(serviceId, dayTypes, stats)
       await prisma.netexReference.create({ data: { key: calendarKey, value: 'done' } })
     }
-    if (++journeys % 100 === 0) { await log(`${journeys} courses projetées`); setDownloadProgress({ phase: 'importing', percent: null }) }
+    journeys++
+    const lineName = text(line.PublicCode) || text(line.Name) || lineId || 'ligne inconnue'
+    const detail = `${formatCount(stats.trips)} courses et ${formatCount(stats.stopTimes)} horaires ajoutés — ligne ${lineName}`
+    if (journeys === 1 || journeys % 100 === 0) {
+      await log(`${journeys} courses projetées`)
+      updateProjection('ServiceJourney', String(row.entityId ?? journeys), detail, `${formatCount(journeys)} course(s) projetée(s) — ${formatCount(stats.stopTimes)} horaires`)
+    } else {
+      updateProjection('ServiceJourney', String(row.entityId ?? journeys), detail)
+    }
   }
   await log(`Projection terminée : ${stats.routes} lignes, ${stats.trips} courses, ${stats.pois} POI. Toutes les entités originales sont consultables dans l’inventaire.`)
+  reportImportActivity(`Projection NeTEx terminée : ${statsSummary(stats)}`, {
+    phase: 'importing',
+    phasePercent: 100,
+    detail: `${formatCount(stats.pois)} POI et ${formatCount(stats.calendarDates)} dates de circulation`,
+    currentItem: null,
+    processed: totalEntities,
+    total: totalEntities,
+    unit: 'entités',
+    counters: netexCounters(stats),
+  })
   cache.clear()
   return stats
+}
+
+function netexCounters(stats: ImportStats): Record<string, number> {
+  return {
+    agencies: stats.agencies,
+    routes: stats.routes,
+    stops: stats.stops,
+    pois: stats.pois,
+    trips: stats.trips,
+    stopTimes: stats.stopTimes,
+    calendars: stats.calendarDates,
+    fareZones: stats.fareZones,
+  }
+}
+
+function statsSummary(stats: ImportStats) {
+  return `${formatCount(stats.routes)} lignes, ${formatCount(stats.stops)} arrêts, ${formatCount(stats.pois)} POI, ${formatCount(stats.trips)} courses, ${formatCount(stats.stopTimes)} horaires`
+}
+
+function formatCount(value: number) {
+  return value.toLocaleString('fr-FR')
 }
 
 const days: Record<string, number[]> = { Monday: [1], Tuesday: [2], Wednesday: [3], Thursday: [4], Friday: [5], Saturday: [6], Sunday: [0], Weekdays: [1,2,3,4,5], Weekend: [0,6], Everyday: [0,1,2,3,4,5,6] }

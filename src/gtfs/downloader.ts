@@ -4,7 +4,7 @@ import https from 'node:https'
 import http from 'node:http'
 import path from 'node:path'
 import { config, getSourceConfig, type DataSource } from '../config.js'
-import { setDownloadProgress } from '../import-state.js'
+import { reportImportActivity, setDownloadProgress } from '../import-state.js'
 
 type ProgressCb = (info: {
   bytesReceived: number
@@ -132,15 +132,40 @@ export async function downloadAndExtract(
 
   setDownloadProgress({
     phase: 'extracting',
-    percent: 100,
+    phasePercent: 0,
+    detail: `Ouverture de ${zipName}`,
+    currentItem: zipName,
     etaSeconds: null,
     speedBps: null,
-  })
+  }, `Téléchargement terminé : ${(zipSize / (1024 * 1024)).toFixed(1)} Mo reçus`)
 
   const extractDir = path.join(tmpDir, 'extracted')
   fs.mkdirSync(extractDir, { recursive: true })
 
-  await extractZip(zipPath, extractDir)
+  await extractZip(zipPath, extractDir, (progress) => {
+    const entryFraction = progress.entryBytesTotal > 0
+      ? progress.entryBytes / progress.entryBytesTotal
+      : 0
+    const phasePercent = progress.entriesTotal > 0
+      ? ((progress.entriesProcessed + entryFraction) / progress.entriesTotal) * 100
+      : null
+    setDownloadProgress({
+      phase: 'extracting',
+      phasePercent,
+      detail: `${progress.entriesProcessed}/${progress.entriesTotal} entrée(s) extraite(s)`,
+      currentItem: progress.entry,
+      processed: progress.bytesProcessed,
+      total: null,
+      unit: 'octets extraits',
+      counters: { archiveEntries: progress.entriesProcessed },
+    })
+  })
+  reportImportActivity('Extraction terminée', {
+    phase: 'extracting',
+    phasePercent: 100,
+    detail: 'Tous les fichiers sont disponibles pour l’inventaire',
+    currentItem: null,
+  })
   fs.unlinkSync(zipPath)
 
   // Certains zips encapsulent un dossier racine

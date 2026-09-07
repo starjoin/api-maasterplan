@@ -2,7 +2,7 @@ import { runImportInWorker } from '../import-runner.js'
 import { prisma, getActiveSource, getMetaId } from '../db.js'
 import { getSourceConfig } from '../config.js'
 import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
-import { isImportRunning, setImportRunning, setDownloadProgress } from '../import-state.js'
+import { isImportRunning, reportImportActivity, setImportRunning, setDownloadProgress } from '../import-state.js'
 import { importNetexExtractDir } from './import-pipeline.js'
 
 function extractRfuTimestamp(info: Record<string, unknown>): string | null {
@@ -59,6 +59,12 @@ export async function syncNetex(
       data: { status: 'DOWNLOADING', startedAt: new Date() },
     })
 
+    reportImportActivity('Vérification de la publication NeTEx', {
+      phase: 'preparing',
+      phasePercent: 85,
+      detail: extractDirOverride ? 'Import depuis un dossier local' : 'Lecture de la version distante',
+    })
+
     let extractDir = extractDirOverride
     let rfuUpdatedAt: string | null = null
     let rfuVersion: string | null = null
@@ -84,12 +90,23 @@ export async function syncNetex(
       extractDir = await downloadAndExtract(job.id, 'netex')
     } else {
       await appendLog(job.id, `Import NeTEx depuis le dossier local ${extractDir}`)
+      reportImportActivity('Dossier NeTEx local prêt', {
+        phase: 'indexing',
+        phasePercent: 0,
+        detail: 'Détection des fichiers XML et des entités',
+        currentItem: extractDir,
+      })
       rfuUpdatedAt = `local:${Date.now()}`
       rfuVersion = 'local'
     }
 
     await prisma.importJob.update({ where: { id: job.id }, data: { status: 'IMPORTING' } })
-    setDownloadProgress({ phase: 'importing', percent: 0, etaSeconds: null, speedBps: null })
+    if (!extractDirOverride) reportImportActivity('Début de l’inventaire NeTEx', {
+      phase: 'indexing',
+      phasePercent: 0,
+      detail: 'Lecture progressive de tous les fichiers XML',
+      currentItem: null,
+    })
     await appendLog(job.id, 'Parsing + import NeTEx incrémental (fichier par fichier)…')
 
     const stats = await importNetexExtractDir(extractDir, (msg) => appendLog(job.id, msg))

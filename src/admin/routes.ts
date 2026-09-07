@@ -39,9 +39,27 @@ import { refreshVehicleMonitoring } from '../siri/vehicle-monitoring.js'
 import { getStorageStatus, logStorageStatus } from '../storage.js'
 
 function serializeProgress(p: ReturnType<typeof getDownloadProgress>) {
+  const now = Date.now()
   return {
     phase: p.phase,
     percent: p.percent,
+    phasePercent: p.phasePercent,
+    phaseLabel: p.phaseLabel,
+    detail: p.detail,
+    currentItem: p.currentItem,
+    processed: p.processed,
+    total: p.total,
+    unit: p.unit,
+    counters: p.counters,
+    recentEvents: p.recentEvents,
+    startedAt: p.startedAt || null,
+    lastActivityAt: p.lastActivityAt || null,
+    heartbeatAt: p.heartbeatAt || null,
+    elapsedSeconds: p.startedAt ? Math.max(0, Math.floor((now - p.startedAt) / 1000)) : null,
+    secondsSinceActivity: p.lastActivityAt ? Math.max(0, Math.floor((now - p.lastActivityAt) / 1000)) : null,
+    secondsSinceHeartbeat: p.heartbeatAt ? Math.max(0, Math.floor((now - p.heartbeatAt) / 1000)) : null,
+    workerRssBytes: p.workerRssBytes,
+    workerRssLabel: p.workerRssBytes != null ? formatBytes(p.workerRssBytes) : null,
     bytesReceived: p.bytesReceived,
     bytesTotal: p.bytesTotal,
     speedBps: p.speedBps,

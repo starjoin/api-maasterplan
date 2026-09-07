@@ -28,6 +28,8 @@ En mode **Dockerfile Coolify**, renseigner également la limite mémoire 2 300 M
 
 L’import automatique au premier démarrage est désactivé dans l’image. Lancer les premiers imports depuis le dashboard, puis les imports planifiés suivent `IMPORT_CRON` (défaut 03:00, fuseau du processus). `/health` reste léger et ne compte pas les tables. La première base vide ne peut évidemment pas fournir de données avant son premier import réussi.
 
+Pendant un import, le dashboard actualise chaque seconde le pourcentage global et celui de la phase active : préparation, téléchargement, extraction, inventaire, projection, validation, optimisation puis publication. Il affiche l’élément courant, les volumes traités, les compteurs de fichiers, entités sources, lignes, arrêts, POI, courses, horaires, calendriers et tracés, ainsi qu’un journal borné aux 40 événements les plus récents. Le signal du worker et sa mémoire RSS permettent de distinguer un calcul long d’un processus arrêté. Les messages IPC sont plafonnés à cinq par seconde pour conserver un coût faible sur le petit serveur.
+
 ## Versions, échecs et stockage
 
 Les bases historiques deviennent aussi les bases de contrôle : jobs et configuration API Designer restent stables pendant les imports. Les données nouvelles se trouvent dans `<base>.versions/<uuid>/dataset.db`, avec les fichiers originaux dans `sources/`. Le manifeste `<base>.active.json` est remplacé atomiquement après synchronisation disque. Ne jamais remplacer ou copier seulement un fichier SQLite pendant qu’il est ouvert.

@@ -6,12 +6,24 @@ import { Transform } from 'node:stream'
 import { config } from './config.js'
 
 /** One entry at a time; never load the archive or a decompressed file into RAM. */
-export function extractZip(zipPath: string, destination: string): Promise<void> {
+export function extractZip(
+  zipPath: string,
+  destination: string,
+  onProgress?: (progress: {
+    entry: string
+    entriesProcessed: number
+    entriesTotal: number
+    entryBytes: number
+    entryBytesTotal: number
+    bytesProcessed: number
+  }) => void,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true, validateEntrySizes: true }, (error, zip) => {
       if (error || !zip) return reject(error)
       let total = 0
       let count = 0
+      let completedEntries = 0
       const fail = (error: unknown) => { zip.close(); reject(error) }
       zip.on('error', fail)
       zip.on('end', resolve)
@@ -21,15 +33,47 @@ export function extractZip(zipPath: string, destination: string): Promise<void> 
           const target = path.resolve(destination, entry.fileName)
           if (!target.startsWith(path.resolve(destination) + path.sep)) throw new Error('Chemin ZIP invalide')
           if (((entry.externalFileAttributes >>> 16) & 0xf000) === 0xa000) throw new Error('Liens symboliques interdits dans le ZIP')
-          if (entry.fileName.endsWith('/')) { await fs.promises.mkdir(target, { recursive: true }); zip.readEntry(); return }
+          if (entry.fileName.endsWith('/')) {
+            await fs.promises.mkdir(target, { recursive: true })
+            completedEntries++
+            onProgress?.({
+              entry: entry.fileName,
+              entriesProcessed: completedEntries,
+              entriesTotal: zip.entryCount,
+              entryBytes: 0,
+              entryBytesTotal: 0,
+              bytesProcessed: total,
+            })
+            zip.readEntry()
+            return
+          }
           if (total + entry.uncompressedSize > config.IMPORT_MAX_BYTES) throw new Error('Archive : taille décompressée maximale dépassée')
           await fs.promises.mkdir(path.dirname(target), { recursive: true })
           const input = await new Promise<NodeJS.ReadableStream>((res, rej) => zip.openReadStream(entry, (err, stream) => err || !stream ? rej(err) : res(stream)))
+          let entryBytes = 0
+          let lastEmit = 0
+          const emit = (force = false) => {
+            const now = Date.now()
+            if (!force && now - lastEmit < 250) return
+            lastEmit = now
+            onProgress?.({
+              entry: entry.fileName,
+              entriesProcessed: completedEntries,
+              entriesTotal: zip.entryCount,
+              entryBytes,
+              entryBytesTotal: entry.uncompressedSize,
+              bytesProcessed: total,
+            })
+          }
           const budget = new Transform({ transform(chunk, _encoding, callback) {
             total += chunk.length
+            entryBytes += chunk.length
+            emit()
             callback(total > config.IMPORT_MAX_BYTES ? new Error('Archive trop volumineuse') : null, chunk)
           } })
           await pipeline(input, budget, fs.createWriteStream(target, { flags: 'wx' }))
+          completedEntries++
+          emit(true)
           zip.readEntry()
         })().catch(fail)
       })

@@ -7,6 +7,7 @@ import { SaxesParser } from 'saxes'
 import { prisma, fileUrlToPath } from './db.js'
 import { listFiles } from './archive.js'
 import { config } from './config.js'
+import { reportImportActivity, setDownloadProgress } from './import-state.js'
 
 type Row = { file: string; kind: string; entityId?: string; data: string }
 export class Inventory {
@@ -66,15 +67,35 @@ export class Inventory {
 /** Parse XML incrementally, retaining only the current entity, never a full frame/document. */
 export async function indexNetexDirectory(dir: string, log: (message: string) => void | Promise<void>) {
   const inventory = new Inventory()
+  const files: string[] = []
+  for await (const file of listFiles(dir)) files.push(file)
   let xmlFiles = 0
   let totalBytes = 0
-  for await (const file of listFiles(dir)) {
-    totalBytes += (await fs.promises.stat(path.join(dir, file))).size
-    if (totalBytes > config.IMPORT_MAX_BYTES) throw new Error('Fichiers source trop volumineux')
+  for (const file of files) totalBytes += (await fs.promises.stat(path.join(dir, file))).size
+  if (totalBytes > config.IMPORT_MAX_BYTES) throw new Error('Fichiers source trop volumineux')
+  let processedBytes = 0
+  let totalRecords = 0
+  reportImportActivity(`Inventaire NeTEx démarré : ${files.length} fichier(s)`, {
+    phase: 'indexing',
+    phasePercent: 0,
+    detail: `${formatCount(totalBytes)} octets à lire`,
+    processed: 0,
+    total: totalBytes,
+    unit: 'octets',
+    counters: { filesTotal: files.length, filesRead: 0, rawRecords: 0 },
+  })
+  for (const [fileIndex, file] of files.entries()) {
+    const fileSize = (await fs.promises.stat(path.join(dir, file))).size
     let records = 0
     if (/\.xml$/i.test(file)) {
       xmlFiles++
       await log(`Inventaire XML : ${file}`)
+      reportImportActivity(`Lecture du fichier XML ${fileIndex + 1}/${files.length} : ${file}`, {
+        phase: 'indexing',
+        detail: `Analyse XML en flux — ${formatCount(fileSize)} octets`,
+        currentItem: file,
+        counters: { filesRead: fileIndex, rawRecords: totalRecords },
+      })
       const parser = new SaxesParser({ xmlns: true })
       type Node = { name: string; data?: Record<string, unknown>; id?: string; text: string; size: number }
       const stack: Node[] = []
@@ -111,13 +132,56 @@ export async function indexNetexDirectory(dir: string, log: (message: string) =>
       // Tiny input chunks bound queued completed records between awaited SQLite writes.
       for await (const chunk of fs.createReadStream(path.join(dir, file), { encoding: 'utf8', highWaterMark: 16 * 1024 })) {
         parser.write(chunk)
+        processedBytes += Buffer.byteLength(chunk)
+        const currentRecords = totalRecords + records
+        setDownloadProgress({
+          phase: 'indexing',
+          phasePercent: totalBytes ? (processedBytes / totalBytes) * 100 : 100,
+          detail: `${formatCount(currentRecords)} entités trouvées — fichier ${fileIndex + 1}/${files.length}`,
+          currentItem: file,
+          processed: processedBytes,
+          total: totalBytes,
+          unit: 'octets',
+          counters: { filesRead: fileIndex, rawRecords: currentRecords },
+        })
         await inventory.flushIfReady()
       }
       parser.close()
       await inventory.flush()
     }
     await inventory.saveFile(dir, file, records)
+    if (!/\.xml$/i.test(file)) processedBytes += fileSize
+    totalRecords += records
+    reportImportActivity(
+      /\.xml$/i.test(file)
+        ? `${file} inventorié : ${formatCount(records)} entités`
+        : `${file} archivé : ${formatCount(fileSize)} octets`,
+      {
+        phase: 'indexing',
+        phasePercent: totalBytes ? (processedBytes / totalBytes) * 100 : 100,
+        detail: `${fileIndex + 1}/${files.length} fichier(s) terminé(s)`,
+        currentItem: file,
+        processed: processedBytes,
+        total: totalBytes,
+        unit: 'octets',
+        counters: { filesRead: fileIndex + 1, rawRecords: totalRecords },
+      },
+    )
   }
   if (!xmlFiles) throw new Error('Aucun fichier XML NeTEx trouvé')
   await inventory.finish()
+  reportImportActivity(`Inventaire NeTEx terminé : ${formatCount(totalRecords)} entités`, {
+    phase: 'indexing',
+    phasePercent: 100,
+    detail: `${files.length} fichier(s) source conservé(s) intégralement`,
+    currentItem: null,
+    processed: totalBytes,
+    total: totalBytes,
+    unit: 'octets',
+    counters: { filesRead: files.length, rawRecords: totalRecords },
+  })
+}
+
+function formatCount(value: number) {
+  return value.toLocaleString('fr-FR')
 }

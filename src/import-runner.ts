@@ -4,7 +4,14 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { config, type DataSource } from './config.js'
 import { generationRoot, publishGeneration, withSourcePrisma, pruneGenerations, servingUrl } from './db.js'
-import { isImportRunning, setImportRunning, setDownloadProgress, type DownloadProgress } from './import-state.js'
+import {
+  isImportRunning,
+  reportImportActivity,
+  setImportHeartbeat,
+  setImportRunning,
+  setDownloadProgress,
+  type DownloadProgress,
+} from './import-state.js'
 
 let child: ChildProcess | undefined
 export function stopImportWorker() { child?.kill('SIGTERM') }
@@ -17,12 +24,22 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
   try {
     const job = await withSourcePrisma(source, client => client.importJob.create({ data: { source, triggeredBy, status: 'PENDING', startedAt: new Date() } }))
     jobId = job.id
+    reportImportActivity(`Préparation de l’import ${source.toUpperCase()}`, {
+      phase: 'preparing',
+      phasePercent: 15,
+      detail: 'Nettoyage des anciennes versions temporaires',
+    })
     await pruneGenerations(source)
     generationDir = path.join(generationRoot(source), randomUUID())
     fs.mkdirSync(generationDir, { recursive: true })
     const disk = await fs.promises.statfs(generationDir)
     if (disk.bavail * disk.bsize < 256 * 1024 ** 2) throw new Error('Moins de 256 Mo de disque libre ; import refusé')
     const databaseUrl = `file:${path.join(generationDir, 'dataset.db')}`
+    reportImportActivity('Base temporaire créée', {
+      phase: 'preparing',
+      phasePercent: 60,
+      detail: 'Lecture des métadonnées de la version actuellement publiée',
+    })
     const meta = await withSourcePrisma(source, client => client.datasetMeta.findUnique({ where: { id: source } }))
     const development = !__filename.endsWith('.js')
     const script = path.resolve(development ? 'src/import-worker.ts' : 'dist/import-worker.js')
@@ -52,6 +69,7 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
       child.on('message', (message: { type?: string; message?: string; progress?: DownloadProgress; rss?: number }) => {
         lastBeat = Date.now()
         if (message.type === 'progress' && message.progress) setDownloadProgress(message.progress)
+        if (message.type === 'heartbeat') setImportHeartbeat(message.rss)
         if (message.type === 'error') failure = new Error(message.message ?? 'Échec import')
         if (message.rss && message.rss > config.IMPORT_RSS_MB * 1024 ** 2) terminate('Budget mémoire de l’import dépassé')
       })
@@ -66,8 +84,18 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
     const result = await withSourcePrisma(source, client => client.importJob.findUniqueOrThrow({ where: { id: job.id } }))
     if (result.status !== 'SKIPPED') {
       if (result.status !== 'VALIDATING') throw new Error('Le worker n’a pas validé le nouvel import')
+      reportImportActivity('Tous les contrôles sont passés', {
+        phase: 'publishing',
+        phasePercent: 20,
+        detail: 'Bascule atomique vers la nouvelle version',
+      })
       await publishGeneration(source, databaseUrl, job.id)
       published = true
+      reportImportActivity('Nouvelle version publiée', {
+        phase: 'publishing',
+        phasePercent: 100,
+        detail: 'Finalisation du journal d’import',
+      })
       await withSourcePrisma(source, client => client.importJob.update({ where: { id: job.id }, data: { status: 'COMPLETED', completedAt: new Date() } }))
     }
     return job.id

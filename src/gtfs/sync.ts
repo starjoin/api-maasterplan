@@ -2,11 +2,10 @@ import { prisma, getActiveSource, getMetaId } from '../db.js'
 import type { DataSource } from '../config.js'
 import { getSourceConfig } from '../config.js'
 import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
-import { importGtfsLargeFilesFromDir, importGtfsToDb } from './importer.js'
 import { importGtfsDirectory } from './stream-import.js'
 import type { ImportStats } from './types.js'
 import { syncNetex } from '../netex/sync.js'
-import { isImportRunning, setImportRunning, setDownloadProgress } from '../import-state.js'
+import { isImportRunning, reportImportActivity, setImportRunning, setDownloadProgress } from '../import-state.js'
 import { runImportInWorker, shouldUseImportWorker } from '../import-runner.js'
 
 export { isImportRunning, setImportRunning }
@@ -83,6 +82,12 @@ export async function syncGtfs(
         data: { status: 'DOWNLOADING', startedAt: new Date() },
       })
 
+      reportImportActivity(`Vérification de la publication ${src.label}`, {
+        phase: 'preparing',
+        phasePercent: 85,
+        detail: extractDirOverride ? 'Import depuis un dossier local' : 'Lecture de la version distante',
+      })
+
       const rfuInfo = extractDirOverride ? null : await fetchRfuInfo(source)
       const zipMeta = extractDirOverride ? null : await fetchZipMetadata(source).catch(() => null)
 
@@ -105,16 +110,30 @@ export async function syncGtfs(
         return job.id
       }
 
-      await appendLog(job.id, `Téléchargement ${src.label} depuis ${src.zipUrl}…`)
-      setDownloadProgress({
-        phase: 'downloading',
-        percent: 0,
-        bytesReceived: 0,
-        bytesTotal: null,
-        speedBps: null,
-        etaSeconds: null,
-      })
-      const extractDir = extractDirOverride ?? await downloadAndExtract(job.id, source)
+      let extractDir: string
+      if (extractDirOverride) {
+        extractDir = extractDirOverride
+        await appendLog(job.id, `Import ${src.label} depuis le dossier local ${extractDir}`)
+        reportImportActivity('Dossier GTFS local prêt', {
+          phase: 'indexing',
+          phasePercent: 0,
+          detail: 'Détection des fichiers CSV et de leur taille',
+          currentItem: extractDir,
+        })
+      } else {
+        await appendLog(job.id, `Téléchargement ${src.label} depuis ${src.zipUrl}…`)
+        setDownloadProgress({
+          phase: 'downloading',
+          phasePercent: 0,
+          detail: `Connexion à ${new URL(src.zipUrl).host}`,
+          currentItem: src.zipUrl,
+          bytesReceived: 0,
+          bytesTotal: null,
+          speedBps: null,
+          etaSeconds: null,
+        })
+        extractDir = await downloadAndExtract(job.id, source)
+      }
 
       await prisma.importJob.update({
         where: { id: job.id },
@@ -128,7 +147,12 @@ export async function syncGtfs(
         where: { id: job.id },
         data: { status: 'IMPORTING' },
       })
-      setDownloadProgress({ phase: 'importing', percent: null, etaSeconds: null, speedBps: null })
+      reportImportActivity('Début de la lecture des tables GTFS', {
+        phase: 'indexing',
+        phasePercent: 0,
+        detail: 'Détection des fichiers et de leur taille',
+        currentItem: null,
+      })
 
       const stats = await importGtfsDirectory(extractDir, (msg) => appendLog(job.id, msg))
 

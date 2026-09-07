@@ -108,8 +108,35 @@ export interface SourceInfo {
 }
 
 export interface DownloadProgress {
-  phase: 'idle' | 'downloading' | 'extracting' | 'parsing' | 'importing'
+  phase:
+    | 'idle'
+    | 'preparing'
+    | 'downloading'
+    | 'extracting'
+    | 'indexing'
+    | 'parsing'
+    | 'importing'
+    | 'validating'
+    | 'summarizing'
+    | 'publishing'
   percent: number | null
+  phasePercent: number | null
+  phaseLabel: string | null
+  detail: string | null
+  currentItem: string | null
+  processed: number | null
+  total: number | null
+  unit: string | null
+  counters: Record<string, number>
+  recentEvents: Array<{ at: number; message: string }>
+  startedAt: number | null
+  lastActivityAt: number | null
+  heartbeatAt: number | null
+  elapsedSeconds: number | null
+  secondsSinceActivity: number | null
+  secondsSinceHeartbeat: number | null
+  workerRssBytes: number | null
+  workerRssLabel: string | null
   bytesReceived: number
   bytesTotal: number | null
   speedBps: number | null

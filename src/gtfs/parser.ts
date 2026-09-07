@@ -110,11 +110,17 @@ export async function forEachCsvBatch<T extends Record<string, string>>(
   filePath: string,
   batchSize: number,
   onBatch: (chunk: T[]) => Promise<void>,
+  onProgress?: (bytesRead: number) => void,
 ): Promise<number> {
   let total = 0
   let batch: T[] = []
 
   const input = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 })
+  let bytesRead = 0
+  input.on('data', (chunk: string | Buffer) => {
+    bytesRead += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
+    onProgress?.(bytesRead)
+  })
   const parser = input.pipe(
     parse({
       ...CSV_OPTS,

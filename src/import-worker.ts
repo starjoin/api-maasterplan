@@ -2,6 +2,7 @@ import os from 'node:os'
 import { isDataSource } from './config.js'
 import { bindSourceInProcess, disconnectDatabases, prisma } from './db.js'
 import { validateDataset } from './validation.js'
+import { reportImportActivity } from './import-state.js'
 
 async function main() {
   const source = process.argv[2]
@@ -23,10 +24,30 @@ async function main() {
     const job = await prisma.importJob.findUniqueOrThrow({ where: { id: jobId } })
     if (job.status !== 'SKIPPED') {
       await prisma.importJob.update({ where: { id: jobId }, data: { status: 'VALIDATING', completedAt: null } })
+      reportImportActivity('Début des contrôles de cohérence', {
+        phase: 'validating',
+        phasePercent: 0,
+        detail: 'Vérification de la base et des relations',
+      })
       await validateDataset(source)
+      reportImportActivity('Données cohérentes, préparation des résumés', {
+        phase: 'summarizing',
+        phasePercent: 0,
+        detail: 'Calcul des lignes représentatives et des amplitudes horaires',
+      })
       await (await import('./line-summary.js')).buildLineSummaries()
+      reportImportActivity('Résumés calculés', {
+        phase: 'summarizing',
+        phasePercent: 90,
+        detail: 'Synchronisation finale de la base sur disque',
+      })
       await prisma.$executeRawUnsafe('PRAGMA synchronous = FULL')
       await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)')
+      reportImportActivity('Base synchronisée sur disque', {
+        phase: 'summarizing',
+        phasePercent: 100,
+        detail: 'Le serveur va publier la nouvelle version',
+      })
     }
     await disconnectDatabases()
   } finally { clearInterval(heartbeat) }

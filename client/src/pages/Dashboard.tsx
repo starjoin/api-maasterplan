@@ -13,6 +13,7 @@ import {
   SkipForward,
   AlertTriangle,
   HardDrive,
+  Activity,
 } from 'lucide-react'
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof CheckCircle2 }> = {
@@ -26,46 +27,159 @@ const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof
   IMPORTING: { label: 'Import', color: 'text-blue-600', icon: Loader2 },
 }
 
+const COUNTER_LABELS: Array<[string, string]> = [
+  ['filesRead', 'Fichiers lus'],
+  ['filesTotal', 'Fichiers détectés'],
+  ['archiveEntries', 'Entrées extraites'],
+  ['rawRecords', 'Données sources'],
+  ['agencies', 'Opérateurs'],
+  ['routes', 'Lignes'],
+  ['stops', 'Arrêts'],
+  ['pois', 'POI'],
+  ['trips', 'Courses'],
+  ['stopTimes', 'Horaires'],
+  ['shapes', 'Points de tracé'],
+  ['calendars', 'Calendriers'],
+  ['fareZones', 'Zones tarifaires'],
+  ['transfers', 'Correspondances'],
+  ['summarizedRoutes', 'Lignes optimisées'],
+]
+
+function formatCount(value: number) {
+  return value.toLocaleString('fr-FR')
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${formatCount(value)} o`
+  if (value < 1024 ** 2) return `${(value / 1024).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Ko`
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo`
+  return `${(value / 1024 ** 3).toLocaleString('fr-FR', { maximumFractionDigits: 2 })} Go`
+}
+
+function formatDuration(seconds: number | null) {
+  if (seconds == null) return '—'
+  if (seconds < 60) return `${seconds} s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = seconds % 60
+  if (minutes < 60) return `${minutes} min ${rest.toString().padStart(2, '0')} s`
+  return `${Math.floor(minutes / 60)} h ${(minutes % 60).toString().padStart(2, '0')} min`
+}
+
+function formatWork(progress: DownloadProgress) {
+  if (progress.processed == null) return null
+  const format = progress.unit === 'octets' ? formatBytes : formatCount
+  const value = format(progress.processed)
+  const total = progress.total != null ? ` / ${format(progress.total)}` : ''
+  return `${value}${total}${progress.unit && progress.unit !== 'octets' ? ` ${progress.unit}` : ''}`
+}
+
 function DownloadProgressBlock({ progress }: { progress: DownloadProgress }) {
   if (progress.phase === 'idle') return null
-
-  const phaseLabel =
-    progress.phase === 'downloading'
-      ? 'Téléchargement'
-      : progress.phase === 'extracting'
-        ? 'Extraction'
-        : progress.phase === 'parsing'
-          ? 'Parsing'
-          : 'Import en base'
-
-  const showBar = progress.phase === 'downloading' && progress.percent != null
+  const percent = progress.percent ?? 0
+  const phasePercent = progress.phasePercent ?? 0
+  const workerAlive = progress.secondsSinceHeartbeat != null && progress.secondsSinceHeartbeat <= 5
+  const counters = COUNTER_LABELS
+    .map(([key, label]) => ({ key, label, value: progress.counters?.[key] }))
+    .filter((counter) => counter.value != null)
+  const work = formatWork(progress)
 
   return (
-    <div className="mb-4 p-4 rounded-lg border border-blue-100 bg-blue-50/60 space-y-2">
-      <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium text-blue-900 flex items-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          {phaseLabel}
-          {progress.percent != null && progress.phase === 'downloading' && (
-            <span className="tabular-nums font-semibold">{progress.percent.toFixed(1)} %</span>
-          )}
-        </span>
-        <span className="text-xs text-blue-700 tabular-nums">
-          {progress.etaLabel ? `reste ~ ${progress.etaLabel}` : null}
-          {progress.speedLabel ? (progress.etaLabel ? ' · ' : '') + progress.speedLabel : null}
-        </span>
-      </div>
-      {showBar && (
-        <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
+    <div className="mb-6 rounded-xl border border-blue-200 bg-white shadow-sm overflow-hidden">
+      <div className="p-5 bg-blue-50/70">
+        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-blue-950">
+              <Loader2 className="w-5 h-5 animate-spin flex-shrink-0" />
+              <h2 className="font-semibold">Import en cours · {progress.phaseLabel ?? progress.phase}</h2>
+            </div>
+            <p className="mt-1 text-sm text-blue-900">{progress.detail ?? 'Traitement en cours…'}</p>
+            {progress.currentItem && (
+              <p className="mt-1 text-xs text-blue-700 truncate" title={progress.currentItem}>
+                Élément courant : <span className="font-mono">{progress.currentItem}</span>
+              </p>
+            )}
+          </div>
+          <div className="flex items-baseline gap-1 text-blue-950 tabular-nums flex-shrink-0">
+            <span className="text-3xl font-bold">{percent.toFixed(1)}</span>
+            <span className="font-semibold">%</span>
+          </div>
+        </div>
+
+        <div className="mt-4 h-3 rounded-full bg-blue-100 overflow-hidden" aria-label={`Progression globale ${percent.toFixed(1)} %`}>
           <div
-            className="h-full bg-blue-500 transition-[width] duration-300 ease-out"
-            style={{ width: `${Math.min(100, Math.max(0, progress.percent ?? 0))}%` }}
+            className="h-full bg-blue-600 transition-[width] duration-500 ease-out"
+            style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
           />
         </div>
-      )}
-      {progress.bytesLabel && (
-        <p className="text-xs text-blue-700 tabular-nums">{progress.bytesLabel}</p>
-      )}
+        <div className="mt-2 flex flex-wrap justify-between gap-x-4 gap-y-1 text-xs text-blue-700 tabular-nums">
+          <span>Phase actuelle : {phasePercent.toFixed(1)} %</span>
+          {work && <span>{work}</span>}
+          {(progress.etaLabel || progress.speedLabel) && (
+            <span>
+              {progress.etaLabel ? `reste ~ ${progress.etaLabel}` : ''}
+              {progress.speedLabel ? `${progress.etaLabel ? ' · ' : ''}${progress.speedLabel}` : ''}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="p-5 space-y-5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="rounded-lg bg-gray-50 p-3">
+            <p className="text-gray-400">Durée</p>
+            <p className="font-semibold text-gray-700 mt-1 tabular-nums">{formatDuration(progress.elapsedSeconds)}</p>
+          </div>
+          <div className="rounded-lg bg-gray-50 p-3">
+            <p className="text-gray-400">Dernière activité</p>
+            <p className="font-semibold text-gray-700 mt-1 tabular-nums">
+              {progress.secondsSinceActivity == null ? '—' : `il y a ${formatDuration(progress.secondsSinceActivity)}`}
+            </p>
+          </div>
+          <div className="rounded-lg bg-gray-50 p-3">
+            <p className="text-gray-400">Worker d’import</p>
+            <p className={`font-semibold mt-1 flex items-center gap-1.5 ${workerAlive ? 'text-green-700' : 'text-amber-700'}`}>
+              <span className={`w-2 h-2 rounded-full ${workerAlive ? 'bg-green-500 animate-pulse' : 'bg-amber-500'}`} />
+              {workerAlive ? 'Actif' : 'Signal en attente'}
+            </p>
+          </div>
+          <div className="rounded-lg bg-gray-50 p-3">
+            <p className="text-gray-400">Mémoire worker</p>
+            <p className="font-semibold text-gray-700 mt-1 tabular-nums">{progress.workerRssLabel ?? 'Mesure en attente'}</p>
+          </div>
+        </div>
+
+        {counters.length > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2">Compteurs en direct</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+              {counters.map(({ key, label, value }) => (
+                <div key={key} className="rounded-lg border border-gray-100 px-3 py-2">
+                  <p className="text-lg font-semibold text-gray-800 tabular-nums">{formatCount(value)}</p>
+                  <p className="text-xs text-gray-400">{label}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {progress.recentEvents?.length > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-2 flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5" /> Activité récente
+            </h3>
+            <div className="rounded-lg bg-gray-950 text-gray-200 p-3 max-h-52 overflow-y-auto font-mono text-xs leading-5">
+              {progress.recentEvents.slice().reverse().map((event, index) => (
+                <div key={`${event.at}-${index}`} className="flex gap-3">
+                  <time className="text-gray-500 tabular-nums flex-shrink-0">
+                    {new Date(event.at).toLocaleTimeString('fr-FR')}
+                  </time>
+                  <span className="break-words">{event.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -78,9 +192,7 @@ export default function Dashboard() {
     queryFn: api.dashboard.get,
     refetchInterval: (q) => {
       const running = q.state.data?.importRunning
-      const phase = q.state.data?.downloadProgress?.phase
-      if (running && phase === 'downloading') return 1000
-      if (running) return 2000
+      if (running) return 1000
       return 30_000
     },
   })
@@ -240,40 +352,41 @@ export default function Dashboard() {
               {data.jobs.recent.map((job) => {
                 const s = STATUS_LABELS[job.status] ?? STATUS_LABELS.PENDING
                 const Icon = s.icon
-                const isActiveDownload =
+                const isActiveImport =
                   data.importRunning &&
                   latest?.id === job.id &&
-                  job.status === 'DOWNLOADING' &&
-                  progress?.phase === 'downloading'
+                  progress?.phase !== 'idle'
+                const activeProgress = isActiveImport ? progress : undefined
                 return (
                   <li key={job.id} className="flex flex-col gap-1.5 text-sm">
                     <div className="flex items-center gap-3">
                       <Icon
-                        className={`w-4 h-4 flex-shrink-0 ${s.color} ${job.status.includes('ING') ? 'animate-spin' : ''}`}
+                        className={`w-4 h-4 flex-shrink-0 ${s.color} ${['DOWNLOADING', 'PARSING', 'IMPORTING', 'VALIDATING'].includes(job.status) ? 'animate-spin' : ''}`}
                       />
                       <span className="flex-1 truncate text-gray-600">
                         {new Date(job.createdAt).toLocaleString('fr-FR')}
                       </span>
                       <span className={`badge bg-gray-100 ${s.color}`}>
-                        {isActiveDownload && progress.percent != null
-                          ? `Téléchargement ${progress.percent.toFixed(0)} %`
+                        {activeProgress?.percent != null
+                          ? `${activeProgress.phaseLabel ?? s.label} ${activeProgress.percent.toFixed(0)} %`
                           : s.label}
                       </span>
                     </div>
-                    {isActiveDownload && (
+                    {activeProgress && (
                       <div className="ml-7 space-y-1">
                         <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
                           <div
                             className="h-full bg-blue-500 transition-[width] duration-300"
                             style={{
-                              width: `${Math.min(100, Math.max(0, progress.percent ?? 0))}%`,
+                              width: `${Math.min(100, Math.max(0, activeProgress.percent ?? 0))}%`,
                             }}
                           />
                         </div>
                         <p className="text-xs text-gray-500 tabular-nums">
-                          {progress.bytesLabel}
-                          {progress.etaLabel ? ` · reste ~ ${progress.etaLabel}` : ''}
-                          {progress.speedLabel ? ` · ${progress.speedLabel}` : ''}
+                          {activeProgress.detail}
+                          {activeProgress.bytesLabel ? ` · ${activeProgress.bytesLabel}` : ''}
+                          {activeProgress.etaLabel ? ` · reste ~ ${activeProgress.etaLabel}` : ''}
+                          {activeProgress.speedLabel ? ` · ${activeProgress.speedLabel}` : ''}
                         </p>
                       </div>
                     )}

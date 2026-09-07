@@ -11,7 +11,7 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
   const db = require('../dist/db.js')
   const { runImportInWorker, stopImportWorker } = require('../dist/import-runner.js')
   const { buildServer } = require('../dist/server.js')
-  const { isImportRunning } = require('../dist/import-state.js')
+  const { getDownloadProgress, isImportRunning } = require('../dist/import-state.js')
   for (const source of ['gtfs','netex']) await db.ensureSourceDatabase(source)
   await db.setActiveSource('gtfs')
   const app = await buildServer()
@@ -90,7 +90,23 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     const rejection = assert.rejects(interrupted, /interrompu/)
     while (isImportRunning()) {
       const current = await db.prisma.importJob.findFirst({orderBy:{createdAt:'desc'}})
-      if (current?.status === 'IMPORTING') { stopImportWorker(); break }
+      const progress = getDownloadProgress()
+      if (current?.status === 'IMPORTING' && progress.phase === 'importing' && progress.counters.stopTimes != null) {
+        assert.ok(progress.percent >= 45 && progress.percent <= 82)
+        assert.ok(progress.phasePercent >= 0 && progress.phasePercent <= 100)
+        assert.equal(progress.phaseLabel, 'Import en base')
+        assert.ok(progress.detail)
+        assert.ok(progress.currentItem)
+        assert.ok(progress.counters.stopTimes >= 0)
+        assert.ok(progress.recentEvents.length > 0)
+        const liveStatus = (await app.inject('/admin/import/status')).json()
+        assert.equal(liveStatus.running, true)
+        assert.equal(liveStatus.downloadProgress.phaseLabel, 'Import en base')
+        assert.ok(liveStatus.downloadProgress.elapsedSeconds >= 0)
+        assert.ok(Array.isArray(liveStatus.downloadProgress.recentEvents))
+        stopImportWorker()
+        break
+      }
       await new Promise(r=>setTimeout(r,5))
     }
     await rejection
