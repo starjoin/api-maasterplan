@@ -20,11 +20,6 @@ fi
 echo "[Entrypoint] Contenu actuel de /app/data :"
 ls -lah /app/data 2>/dev/null || echo "(vide ou inaccessible)"
 
-echo "[Entrypoint] Migrations Prisma (GTFS) → $GTFS_URL"
-DATABASE_URL="$GTFS_URL" npx prisma migrate deploy
-
-echo "[Entrypoint] Migrations Prisma (NeTEx) → $NETEX_URL"
-DATABASE_URL="$NETEX_URL" npx prisma migrate deploy
-
+# Le serveur migre les bases de contrôle et les versions publiées une seule fois.
 echo "[Entrypoint] Démarrage du serveur..."
 exec node dist/index.js

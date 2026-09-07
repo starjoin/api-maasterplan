@@ -1,290 +1,162 @@
 import { prisma } from '../db.js'
 import { config } from '../config.js'
-import type { ImportStats } from '../gtfs/types.js'
-import { EMPTY_STATS } from './types.js'
-import {
-  listLineFiles,
-  parseFareFile,
-  parseLineFile,
-  parseNetworkFile,
-  parseOperatorsFile,
-  parsePoiFile,
-  parseStopsFile,
-} from './parser.js'
-import path from 'node:path'
-import fs from 'node:fs'
+import { indexNetexDirectory } from '../inventory.js'
+import { importGtfsToDb } from '../gtfs/importer.js'
+import { parseStopsFile, parsePoiFile, parseFareFile, parseOperatorsFile, parseNetworkFile, parseLineFile } from './parser.js'
 import { setDownloadProgress } from '../import-state.js'
+import { EMPTY_STATS } from './types.js'
+import type { GtfsFiles, ImportStats } from '../gtfs/types.js'
 
-type LogFn = (msg: string) => void | Promise<void>
-
-async function logAwait(log: LogFn, msg: string) {
-  await log(msg)
-}
-
-function yieldEventLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve))
-}
-
-async function batchInsert<T>(
-  items: T[],
-  batchSize: number,
-  fn: (chunk: T[]) => Promise<unknown>,
-): Promise<void> {
-  for (let i = 0; i < items.length; i += batchSize) {
-    await fn(items.slice(i, i + batchSize))
-    // Laisse respirer l’event loop (healthcheck Coolify)
-    if (i > 0 && i % (batchSize * 5) === 0) await yieldEventLoop()
+type Node = Record<string, any>
+const array = (value: any): any[] => value == null ? [] : Array.isArray(value) ? value : [value]
+const text = (value: any): string | undefined => value == null ? undefined : typeof value === 'object' ? value['#text'] : String(value)
+const ref = (value: any): string | undefined => array(value)[0]?.['@_ref']
+async function* records(kind: string) {
+  let cursor = 0
+  while (true) {
+    const batch = await prisma.$queryRaw<import('@prisma/client').SourceRecord[]>`SELECT r.* FROM SourceRecord r WHERE r.kind=${kind} AND r.id>${cursor} AND NOT EXISTS (SELECT 1 FROM SourceRecord newer WHERE newer.kind=r.kind AND newer.entityId=r.entityId AND newer.id>r.id) ORDER BY r.id LIMIT 25`
+    if (!batch.length) break
+    for (const record of batch) { cursor = record.id; yield { ...record, node: JSON.parse(record.data) as Node } }
   }
 }
-
-async function clearTransitTables() {
-  await prisma.$transaction([
-    prisma.stopTime.deleteMany(),
-    prisma.shape.deleteMany(),
-    prisma.trip.deleteMany(),
-    prisma.calendarDate.deleteMany(),
-    prisma.calendar.deleteMany(),
-    prisma.fareRule.deleteMany(),
-    prisma.fareAttribute.deleteMany(),
-    prisma.fareZone.deleteMany(),
-    prisma.transfer.deleteMany(),
-    prisma.route.deleteMany(),
-    prisma.stop.deleteMany(),
-    prisma.agency.deleteMany(),
-  ])
+const cache = new Map<string, Node | undefined>()
+async function lookup(kind: string, id?: string): Promise<Node | undefined> {
+  if (!id) return undefined
+  const key = `${kind}:${id}`
+  if (cache.has(key)) return cache.get(key)
+  const row = await prisma.sourceRecord.findFirst({ where: { kind, entityId: id }, orderBy: { id: 'desc' } })
+  const node = row ? JSON.parse(row.data) : undefined
+  if (cache.size >= 128) cache.delete(cache.keys().next().value!)
+  cache.set(key, node)
+  return node
 }
+const tables = {
+  'agency.txt': ['agency', 'agencyId', 'agency_id'],
+  'stops.txt': ['stop', 'stopId', 'stop_id'],
+  'routes.txt': ['route', 'routeId', 'route_id'],
+  'trips.txt': ['trip', 'tripId', 'trip_id'],
+  'fare_zones.txt': ['fareZone', 'zoneId', 'fare_zone_id'],
+} as const
 
-/**
- * Import NeTEx incrémental : parse + insert fichier par fichier,
- * sans accumuler tous les stop_times en RAM (évite OOM Coolify).
- */
-export async function importNetexExtractDir(extractDir: string, log: LogFn): Promise<ImportStats> {
-  const stats: ImportStats = { ...EMPTY_STATS }
-  const batchSize = config.IMPORT_BATCH_SIZE
-
-  await logAwait(log, 'Nettoyage des données existantes…')
-  await clearTransitTables()
-  await yieldEventLoop()
-
-  const stopPath = path.join(extractDir, 'stop.xml')
-  const resourcePath = path.join(extractDir, 'resource.xml')
-  const networkPath = path.join(extractDir, 'network.xml')
-  const poiPath = path.join(extractDir, 'poi.xml')
-  const farePath = path.join(extractDir, 'fare.xml')
-
-  await logAwait(log, 'Parsing stop.xml…')
-  setDownloadProgress({ phase: 'parsing', percent: 5 })
-  const { stops: stopRows, stopExtras } = fs.existsSync(stopPath)
-    ? parseStopsFile(stopPath)
-    : { stops: [], stopExtras: {} }
-  await yieldEventLoop()
-
-  await logAwait(log, 'Parsing poi.xml…')
-  const { stops: poiRows, stopExtras: poiExtras } = parsePoiFile(poiPath)
-  Object.assign(stopExtras, poiExtras)
-  const stops = [...stopRows, ...poiRows]
-  await logAwait(log, `  ${stopRows.length} arrêts + ${poiRows.length} POI`)
-  await yieldEventLoop()
-
-  if (stops.length > 0) {
-    await logAwait(log, `Import de ${stops.length} arrêts / POI…`)
-    await batchInsert(stops, batchSize, (chunk) =>
-      prisma.stop.createMany({
-        data: chunk.map((s) => ({
-          stopId: s.stop_id,
-          code: s.stop_code || null,
-          name: s.stop_name,
-          desc: s.stop_desc || null,
-          lat: s.stop_lat ? parseFloat(s.stop_lat) : null,
-          lon: s.stop_lon ? parseFloat(s.stop_lon) : null,
-          zoneId: s.zone_id || null,
-          url: s.stop_url || null,
-          locationType: s.location_type ? parseInt(s.location_type, 10) : null,
-          parentStation: s.parent_station || null,
-          wheelchairBoarding: s.wheelchair_boarding ? parseInt(s.wheelchair_boarding, 10) : null,
-          extras: stopExtras[s.stop_id] ? JSON.stringify(stopExtras[s.stop_id]) : null,
-        })),
-      }),
-    )
-    stats.stops = stops.length
-    stats.pois = stops.filter((s) => s.location_type === '3').length
-  }
-  // Libérer les grosses structures
-  stops.length = 0
-  stopRows.length = 0
-  poiRows.length = 0
-  await yieldEventLoop()
-
-  await logAwait(log, 'Parsing fare.xml…')
-  const { zones, fareZoneExtras } = parseFareFile(farePath)
-  await logAwait(log, `  ${zones.length} zones tarifaires`)
-  if (zones.length > 0) {
-    await batchInsert(zones, batchSize, (chunk) =>
-      prisma.fareZone.createMany({
-        data: chunk.map((z) => ({
-          zoneId: z.fare_zone_id,
-          name: z.fare_zone_name || null,
-          extras: fareZoneExtras[z.fare_zone_id]
-            ? JSON.stringify(fareZoneExtras[z.fare_zone_id])
-            : null,
-        })),
-      }),
-    )
-    stats.fareZones = zones.length
-  }
-  await yieldEventLoop()
-
-  await logAwait(log, 'Parsing resource.xml / network.xml (opérateurs)…')
-  const byId = new Map<string, { agency_id?: string; agency_name: string; agency_timezone?: string }>()
-  for (const a of [...parseOperatorsFile(resourcePath), ...parseNetworkFile(networkPath)]) {
-    if (a.agency_id && !byId.has(a.agency_id)) byId.set(a.agency_id, a)
-  }
-  let agencies = [...byId.values()]
-  if (agencies.length === 0) {
-    agencies = [{ agency_id: 'TCL', agency_name: 'TCL', agency_timezone: 'Europe/Paris' }]
-  }
-  await prisma.agency.createMany({
-    data: agencies.map((a, i) => ({
-      agencyId: a.agency_id || String(i),
-      name: a.agency_name,
-      url: null,
-      timezone: a.agency_timezone || null,
-      lang: null,
-      phone: null,
-      email: null,
-    })),
-  })
-  stats.agencies = agencies.length
-  await yieldEventLoop()
-
-  const lineFiles = listLineFiles(extractDir)
-  await logAwait(log, `Import incrémental de ${lineFiles.length} fichiers ligne…`)
-  setDownloadProgress({ phase: 'importing', percent: 15 })
-
-  const routeSeen = new Set<string>()
-  const calendarSeen = new Set<string>()
-  let skipped = 0
-  let i = 0
-
-  for (const file of lineFiles) {
-    i++
-    try {
-      const parsed = parseLineFile(file)
-
-      const newRoutes = parsed.routes.filter((r) => {
-        if (routeSeen.has(r.route_id)) return false
-        routeSeen.add(r.route_id)
-        return true
-      })
-      if (newRoutes.length > 0) {
-        await prisma.route.createMany({
-          data: newRoutes.map((r) => ({
-            routeId: r.route_id,
-            agencyId: r.agency_id || null,
-            shortName: r.route_short_name || null,
-            longName: r.route_long_name || null,
-            desc: r.route_desc || null,
-            type: parseInt(r.route_type, 10),
-            url: r.route_url || null,
-            color: r.route_color || null,
-            textColor: r.route_text_color || null,
-            sortOrder: r.route_sort_order ? parseInt(r.route_sort_order, 10) : null,
-            extras: parsed.routeExtras[r.route_id]
-              ? JSON.stringify(parsed.routeExtras[r.route_id])
-              : null,
-          })),
-        })
-        stats.routes += newRoutes.length
-      }
-
-      const newCals = parsed.calendars.filter((c) => {
-        if (calendarSeen.has(c.service_id)) return false
-        calendarSeen.add(c.service_id)
-        return true
-      })
-      if (newCals.length > 0) {
-        await prisma.calendar.createMany({
-          data: newCals.map((c) => ({
-            serviceId: c.service_id,
-            monday: c.monday === '1',
-            tuesday: c.tuesday === '1',
-            wednesday: c.wednesday === '1',
-            thursday: c.thursday === '1',
-            friday: c.friday === '1',
-            saturday: c.saturday === '1',
-            sunday: c.sunday === '1',
-            startDate: c.start_date,
-            endDate: c.end_date,
-          })),
-        })
-        stats.calendars += newCals.length
-      }
-
-      if (parsed.trips.length > 0) {
-        await batchInsert(parsed.trips, batchSize, (chunk) =>
-          prisma.trip.createMany({
-            data: chunk.map((t) => ({
-              tripId: t.trip_id,
-              routeId: t.route_id,
-              serviceId: t.service_id,
-              headsign: t.trip_headsign || null,
-              shortName: t.trip_short_name || null,
-              directionId: t.direction_id ? parseInt(t.direction_id, 10) : null,
-              blockId: t.block_id || null,
-              shapeId: t.shape_id || null,
-              wheelchairAccessible: t.wheelchair_accessible
-                ? parseInt(t.wheelchair_accessible, 10)
-                : null,
-              bikesAllowed: t.bikes_allowed ? parseInt(t.bikes_allowed, 10) : null,
-            })),
-          }),
-        )
-        stats.trips += parsed.trips.length
-      }
-
-      if (parsed.stopTimes.length > 0) {
-        await batchInsert(parsed.stopTimes, batchSize, (chunk) =>
-          prisma.stopTime.createMany({
-            data: chunk.map((st) => ({
-              tripId: st.trip_id,
-              arrivalTime: st.arrival_time,
-              departureTime: st.departure_time,
-              stopId: st.stop_id,
-              stopSequence: parseInt(st.stop_sequence, 10),
-              headsign: st.stop_headsign || null,
-              pickupType: st.pickup_type ? parseInt(st.pickup_type, 10) : null,
-              dropOffType: st.drop_off_type ? parseInt(st.drop_off_type, 10) : null,
-              shapeDistTraveled: st.shape_dist_traveled
-                ? parseFloat(st.shape_dist_traveled)
-                : null,
-              timepoint: st.timepoint ? parseInt(st.timepoint, 10) : null,
-            })),
-          }),
-        )
-        stats.stopTimes += parsed.stopTimes.length
-      }
-    } catch (err) {
-      skipped++
-      await logAwait(
-        log,
-        `  skip ${path.basename(file)} : ${err instanceof Error ? err.message : String(err)}`,
-      )
+/** Raw entities are retained in full; transit projections resolve references from SQLite. */
+export async function importNetexExtractDir(dir: string, log: (message: string) => void | Promise<void>): Promise<ImportStats> {
+  cache.clear()
+  await indexNetexDirectory(dir, log)
+  const stats = { ...EMPTY_STATS }
+  async function insert(files: GtfsFiles, extras = {}) {
+    for (const [file, [model, column, field]] of Object.entries(tables)) {
+      const rows = (files as any)[file] as Node[] | undefined
+      if (!rows?.length) continue
+      const unique = [...new Map(rows.map(row => [row[field], row])).values()]
+      const existing = await (prisma[model] as any).findMany({ where: { [column]: { in: unique.map(row => row[field]) } }, select: { [column]: true } })
+      const ids = new Set(existing.map((row: Node) => row[column]))
+      ;(files as any)[file] = unique.filter(row => !ids.has(row[field]))
+      if (file === 'trips.txt' && !(files as any)[file].length) files['stop_times.txt'] = []
     }
-
-    // Libère le CPU pour /health et l’UI
-    await yieldEventLoop()
-
-    if (i % 25 === 0 || i === lineFiles.length) {
-      const pct = 15 + Math.round((i / Math.max(lineFiles.length, 1)) * 80)
-      setDownloadProgress({ phase: 'importing', percent: Math.min(pct, 95) })
-      await logAwait(
-        log,
-        `  lignes ${i}/${lineFiles.length} — ${stats.routes} routes, ${stats.trips} trips, ${stats.stopTimes} stop_times`,
-      )
+    const added = await importGtfsToDb(files, () => {}, extras, false)
+    for (const key of Object.keys(stats) as (keyof ImportStats)[]) stats[key] += added[key]
+  }
+  for (const kind of ['StopPlace', 'PointOfInterest', 'FareZone', 'Operator', 'Network', 'Line']) {
+    await log(`Projection ${kind}…`)
+    for await (const { node } of records(kind)) {
+      const doc = { [kind]: node }
+      if (kind === 'StopPlace' || kind === 'PointOfInterest') {
+        const parsed = kind === 'StopPlace' ? parseStopsFile('', doc) : parsePoiFile('', doc)
+        await insert({ 'stops.txt': parsed.stops }, { stopExtras: parsed.stopExtras })
+      } else if (kind === 'FareZone') {
+        const parsed = parseFareFile('', doc)
+        await insert({ 'fare_zones.txt': parsed.zones }, { fareZoneExtras: parsed.fareZoneExtras })
+      } else if (kind === 'Operator' || kind === 'Network') {
+        await insert({ 'agency.txt': kind === 'Operator' ? parseOperatorsFile('', doc) : parseNetworkFile('', doc) })
+      } else {
+        const parsed = parseLineFile('', doc)
+        await insert({ 'routes.txt': parsed.routes }, { routeExtras: parsed.routeExtras })
+      }
     }
   }
-
-  if (skipped) await logAwait(log, `  ${skipped} fichier(s) ligne ignoré(s)`)
-  setDownloadProgress({ phase: 'importing', percent: 100 })
+  // Standalone Quays are valid too (not only Quays nested inside a StopPlace).
+  for await (const { node } of records('Quay')) {
+    const id = node['@_id']
+    if (await prisma.stop.findUnique({ where: { stopId: id }, select: { id: true } })) continue
+    const loc = node.Centroid?.Location ?? node.Location
+    await insert({ 'stops.txt': [{ stop_id: id, stop_name: text(node.Name) ?? id, stop_lat: text(loc?.Latitude), stop_lon: text(loc?.Longitude), location_type: '0', parent_station: ref(node.StopPlaceRef) }] }, { stopExtras: { [id]: { netex_type: 'Quay' } } })
+  }
+  for await (const { node } of records('PassengerStopAssignment')) {
+    const key = ref(node.ScheduledStopPointRef)
+    const value = ref(node.QuayRef) ?? ref(node.StopPlaceRef)
+    if (key && value) await prisma.netexReference.upsert({ where: { key }, create: { key, value }, update: { value } })
+  }
+  // Index calendar assignments by DayType without retaining all dates in RAM.
+  for await (const row of records('DayTypeAssignment')) {
+    const key = ref(row.node.DayTypeRef)
+    if (key) await prisma.netexReference.create({ data: { key: `day:${key}:${row.id}`, value: row.data } })
+  }
+  let journeys = 0
+  for await (const row of records('ServiceJourney')) {
+    const sj = row.node
+    const jpId = ref(sj.JourneyPatternRef) ?? ref(sj.ServiceJourneyPatternRef)
+    const jp = await lookup('ServiceJourneyPattern', jpId) ?? await lookup('JourneyPattern', jpId)
+    const route = await lookup('Route', ref(jp?.RouteRef))
+    let lineId = ref(sj.LineRef) ?? ref(route?.LineRef)
+    if (!lineId) {
+      const candidates = await prisma.sourceRecord.findMany({ where: { kind: 'Line', file: row.file }, take: 2 })
+      if (candidates.length === 1) lineId = candidates[0].entityId ?? undefined
+    }
+    const line = await lookup('Line', lineId)
+    if (!line) throw new Error(`Ligne non résolue pour ${row.entityId}`)
+    const points = array(jp?.pointsInSequence?.StopPointInJourneyPattern)
+    const ssps = points.map(point => ref(point.ScheduledStopPointRef)).filter((id): id is string => !!id)
+    const assignments = ssps.length ? await prisma.netexReference.findMany({ where: { key: { in: ssps } } }) : []
+    const doc = { ServiceJourney: sj, ServiceJourneyPattern: jp, Route: route, Line: line,
+      PassengerStopAssignment: assignments.map(a => ({ ScheduledStopPointRef: { '@_ref': a.key }, QuayRef: { '@_ref': a.value } })) }
+    const parsed = parseLineFile('', doc)
+    const dayTypes = array(sj.dayTypes?.DayTypeRef).map(refNode => ref(refNode)).filter((id): id is string => !!id).sort()
+    const serviceId = dayTypes.join('|') || `journey:${row.entityId}`
+    for (const trip of parsed.trips) trip.service_id = serviceId
+    await insert({ 'trips.txt': parsed.trips, 'stop_times.txt': parsed.stopTimes })
+    // One calendar projection per distinct DayType combination. Unresolvable calendars stay raw.
+    const calendarKey = `calendar:${serviceId}`
+    if (!await prisma.netexReference.findUnique({ where: { key: calendarKey } })) {
+      await projectCalendar(serviceId, dayTypes, stats)
+      await prisma.netexReference.create({ data: { key: calendarKey, value: 'done' } })
+    }
+    if (++journeys % 100 === 0) { await log(`${journeys} courses projetées`); setDownloadProgress({ phase: 'importing', percent: null }) }
+  }
+  await log(`Projection terminée : ${stats.routes} lignes, ${stats.trips} courses, ${stats.pois} POI. Toutes les entités originales sont consultables dans l’inventaire.`)
+  cache.clear()
   return stats
+}
+
+const days: Record<string, number[]> = { Monday: [1], Tuesday: [2], Wednesday: [3], Thursday: [4], Friday: [5], Saturday: [6], Sunday: [0], Weekdays: [1,2,3,4,5], Weekend: [0,6], Everyday: [0,1,2,3,4,5,6] }
+const dateString = (value?: string) => value?.slice(0, 10).replace(/-/g, '')
+async function projectCalendar(serviceId: string, dayTypes: string[], stats: ImportStats) {
+  if (dayTypes.length !== 1) return // Combined DayTypes require profile-specific semantics.
+  const dates = new Map<string, number>()
+  for (const dayType of dayTypes) {
+    const definition = await lookup('DayType', dayType)
+    const properties = array(definition?.properties?.PropertyOfDay)
+    const tokens = properties.flatMap(p => (text(p.DaysOfWeek) ?? '').split(/\s+/)).filter(Boolean)
+    const supportedWeek = tokens.length > 0 && tokens.every(token => token in days) && properties.every(p => Object.keys(p).every(k => k === 'DaysOfWeek' || k.startsWith('@_')))
+    const weekdays = new Set(supportedWeek ? tokens.flatMap(token => days[token]) : [])
+    const assignments = await prisma.netexReference.findMany({ where: { key: { startsWith: `day:${dayType}:` } } })
+    for (const assignment of assignments) {
+      const node = JSON.parse(assignment.value)
+      const available = text(node.isAvailable) !== 'false' && text(node.IsAvailable) !== 'false'
+      const operatingDay = await lookup('OperatingDay', ref(node.OperatingDayRef))
+      const single = dateString(text(node.Date) ?? text(operatingDay?.CalendarDate))
+      if (single) { dates.set(single, available ? 1 : 2); continue }
+      const period = await lookup('OperatingPeriod', ref(node.OperatingPeriodRef))
+      const from = text(period?.FromDate); const to = text(period?.ToDate)
+      if (!from || !to || !weekdays.size) continue
+      const start = new Date(from.slice(0,10) + 'T00:00:00Z'); const end = new Date(to.slice(0,10) + 'T00:00:00Z')
+      if (!Number.isFinite(+start) || !Number.isFinite(+end) || +end - +start > 3660 * 86400000) throw new Error(`Période NeTEx invalide : ${dayType}`)
+      for (let date = +start; date <= +end; date += 86400000) {
+        const d = new Date(date)
+        if (weekdays.has(d.getUTCDay())) dates.set(dateString(d.toISOString())!, available ? 1 : 2)
+      }
+    }
+  }
+  const rows = [...dates].map(([date, exceptionType]) => ({ serviceId, date, exceptionType }))
+  for (let i = 0; i < rows.length; i += config.IMPORT_BATCH_SIZE) await prisma.calendarDate.createMany({ data: rows.slice(i, i + config.IMPORT_BATCH_SIZE) })
+  stats.calendarDates += rows.length
 }

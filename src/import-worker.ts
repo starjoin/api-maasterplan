@@ -1,71 +1,38 @@
-/**
- * Process enfant d’import GTFS/NeTEx.
- * Isolé du serveur HTTP : un OOM ou un parse lourd ne tue pas Coolify / Traefik.
- *
- * argv: [source, triggeredBy, force]
- */
-import { getSourceConfig, isDataSource, type DataSource } from './config.js'
-import { bindSourceInProcess } from './db.js'
+import os from 'node:os'
+import { isDataSource } from './config.js'
+import { bindSourceInProcess, disconnectDatabases, prisma } from './db.js'
+import { validateDataset } from './validation.js'
 
 async function main() {
-  const sourceArg = process.argv[2] ?? 'gtfs'
-  const triggeredBy = (process.argv[3] === 'scheduler' ? 'scheduler' : 'manual') as
-    | 'manual'
-    | 'scheduler'
-  const force = process.argv[4] === 'true'
-
-  if (!isDataSource(sourceArg)) {
-    console.error(`[import-worker] source invalide: ${sourceArg}`)
-    process.exit(1)
-  }
-  const source: DataSource = sourceArg
-
-  process.env.IMPORT_WORKER = '1'
-  const src = getSourceConfig(source)
-  process.env.DATABASE_URL = src.databaseUrl
-
-  const heartbeat = setInterval(() => {
-    try {
-      process.send?.({ type: 'heartbeat', ts: Date.now() })
-    } catch {
-      /* ignore */
-    }
-  }, 10_000)
-
+  const source = process.argv[2]
+  if (!isDataSource(source)) throw new Error('Source invalide')
+  if (!process.env.IMPORT_DATABASE_URL || !process.env.IMPORT_JOB_ID) throw new Error('Import uniquement via le superviseur')
+  try { os.setPriority(0, 10) } catch { /* platform dependent */ }
+  process.on('disconnect', () => process.exit(1))
+  const heartbeat = setInterval(() => process.send?.({ type: 'heartbeat', rss: process.memoryUsage().rss }), 1000)
   try {
-    console.log(`[import-worker] Démarrage import ${src.label} (force=${force})`)
-    process.send?.({ type: 'progress', progress: { phase: 'downloading', percent: 0, bytesReceived: 0, bytesTotal: null, speedBps: null, etaSeconds: null, updatedAt: Date.now() } })
-
     await bindSourceInProcess(source)
-
-    if (source === 'netex') {
-      const { syncNetex } = await import('./netex/sync.js')
-      const jobId = await syncNetex(triggeredBy, force)
-      console.log(`[import-worker] Terminé job=${jobId}`)
-      process.send?.({ type: 'done', jobId })
-    } else {
-      const { syncGtfs } = await import('./gtfs/sync.js')
-      const jobId = await syncGtfs(triggeredBy, force, 'gtfs')
-      console.log(`[import-worker] Terminé job=${jobId}`)
-      process.send?.({ type: 'done', jobId })
+    const previous = JSON.parse(process.env.IMPORT_PREVIOUS_META ?? 'null')
+    if (previous) await prisma.datasetMeta.update({ where: { id: source }, data: { rfuUpdatedAt: previous.rfuUpdatedAt, rfuVersion: previous.rfuVersion, stats: previous.stats } })
+    const trigger = process.argv[3] === 'scheduler' ? 'scheduler' : 'manual'
+    const force = process.argv[4] === 'true'
+    const localDir = process.argv[5] || undefined
+    const jobId = source === 'netex'
+      ? await (await import('./netex/sync.js')).syncNetex(trigger, force, localDir)
+      : await (await import('./gtfs/sync.js')).syncGtfs(trigger, force, source, localDir)
+    const job = await prisma.importJob.findUniqueOrThrow({ where: { id: jobId } })
+    if (job.status !== 'SKIPPED') {
+      await prisma.importJob.update({ where: { id: jobId }, data: { status: 'VALIDATING', completedAt: null } })
+      await validateDataset(source)
+      await (await import('./line-summary.js')).buildLineSummaries()
+      await prisma.$executeRawUnsafe('PRAGMA synchronous = FULL')
+      await prisma.$queryRawUnsafe('PRAGMA wal_checkpoint(TRUNCATE)')
     }
-    clearInterval(heartbeat)
-    process.exit(0)
-  } catch (err) {
-    clearInterval(heartbeat)
-    const message = err instanceof Error ? err.message : String(err)
-    console.error(`[import-worker] Échec: ${message}`)
-    if (err instanceof Error && err.stack) console.error(err.stack)
-    try {
-      process.send?.({ type: 'error', message })
-    } catch {
-      /* ignore */
-    }
-    process.exit(1)
-  }
+    await disconnectDatabases()
+  } finally { clearInterval(heartbeat) }
 }
-
-main().catch((err) => {
-  console.error('[import-worker] fatal', err)
-  process.exit(1)
+main().then(() => process.exit(0)).catch(error => {
+  console.error('[Import]', error instanceof Error ? error.message : error)
+  process.send?.({ type: 'error', message: error instanceof Error ? error.message : String(error) }, () => process.exit(1))
+  if (!process.send) process.exit(1)
 })

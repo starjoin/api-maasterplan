@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import {
   ensureSourceDatabase,
@@ -14,6 +16,7 @@ import {
   isDataSource,
   type DataSource,
 } from '../config.js'
+import { runImportInWorker } from '../import-runner.js'
 import { getDatasetStats, isImportRunning, syncDataset } from '../gtfs/sync.js'
 import { formatBytes, formatEta, getDownloadProgress } from '../import-state.js'
 import { fetchRfuInfo, fetchZipMetadata } from '../gtfs/downloader.js'
@@ -164,12 +167,9 @@ export async function importRoutes(app: FastifyInstance) {
 
       const force = req.query.force === 'true'
       let source: DataSource = getActiveSource()
-      if (req.query.source && isDataSource(req.query.source)) {
-        if (req.query.source !== source) {
-          await setActiveSource(req.query.source)
-          await reloadEndpoints(app)
-          source = req.query.source
-        }
+      if (req.query.source) {
+        if (!isDataSource(req.query.source)) return reply.status(400).send({ error: 'source invalide' })
+        source = req.query.source
       }
 
       const label = getSourceConfig(source).label
@@ -189,14 +189,10 @@ export async function importRoutes(app: FastifyInstance) {
     const dir = req.body?.path
     if (!dir) return reply.status(400).send({ error: 'path requis' })
 
-    if (getActiveSource() !== 'netex') {
-      await setActiveSource('netex')
-      await reloadEndpoints(app)
-    }
-
-    // Chemin local : inline (pas de worker) — usage dev / debug
-    const { syncNetex } = await import('../netex/sync.js')
-    syncNetex('manual', true, dir).catch((err) => {
+    const realDir = await fs.realpath(dir).catch(() => null)
+    const root = await fs.realpath(config.LOCAL_IMPORT_ROOT).catch(() => path.resolve(config.LOCAL_IMPORT_ROOT))
+    if (!realDir || (realDir !== root && !realDir.startsWith(root + path.sep))) return reply.status(400).send({ error: 'Le dossier doit être dans LOCAL_IMPORT_ROOT' })
+    runImportInWorker('netex', 'manual', true, realDir).catch((err) => {
       app.log.error(err, 'Import NeTEx local échoué')
     })
 
@@ -204,11 +200,12 @@ export async function importRoutes(app: FastifyInstance) {
   })
 
   app.get('/admin/import/status', async (_req, reply) => {
-    const latest = await prisma.importJob.findFirst({ orderBy: { createdAt: 'desc' } })
+    const jobs = await Promise.all(DATA_SOURCES.map(source => withSourcePrisma(source, client => client.importJob.findFirst({ orderBy: { createdAt: 'desc' } }))))
+    const latest = jobs.filter(j => j != null).sort((a, b) => +b!.createdAt - +a!.createdAt)[0] ?? null
     return reply.send({
       running: isImportRunning(),
       latest,
-      source: getActiveSource(),
+      source: latest?.source ?? getActiveSource(),
       downloadProgress: serializeProgress(getDownloadProgress()),
     })
   })
@@ -266,7 +263,7 @@ function stopClassification(s: {
   }
   if (typeof extras?.classification === 'string') return extras.classification
   if (s.desc) return s.desc
-  if (s.locationType === 3) return 'POI'
+  if (extras?.netex_type === 'PointOfInterest') return 'POI'
   return null
 }
 
@@ -297,7 +294,7 @@ function enrichStop(s: {
     extras,
     classification,
     classifications,
-    isPoi: s.locationType === 3,
+    isPoi: extras?.netex_type === 'PointOfInterest',
     netexType: typeof extras?.netex_type === 'string' ? extras.netex_type : null,
     address: extras?.address ?? null,
     keys: extras?.keys ?? null,
@@ -499,7 +496,7 @@ export async function exploreRoutes(app: FastifyInstance) {
       0: 'Arrêt (stop_point)',
       1: 'Zone d’arrêts (stop_area)',
       2: 'Entrée / sortie',
-      3: 'POI',
+      3: getActiveSource() === 'netex' ? 'POI' : 'Nœud de circulation',
       4: 'Zone d’embarquement',
     }
     return reply.send({
@@ -512,19 +509,9 @@ export async function exploreRoutes(app: FastifyInstance) {
   })
 
   app.get('/admin/explore/poi-categories', async (_req, reply) => {
-    const pois = await prisma.stop.findMany({
-      where: { locationType: 3 },
-      select: { desc: true, extras: true, locationType: true },
-    })
-    const counts = new Map<string, number>()
-    for (const p of pois) {
-      const c = stopClassification(p) ?? 'Autre POI'
-      counts.set(c, (counts.get(c) ?? 0) + 1)
-    }
-    const categories = [...counts.entries()]
-      .map(([name, count]) => ({ key: name, name, count }))
-      .sort((a, b) => b.count - a.count)
-    return reply.send({ categories, total: pois.length })
+    const counts = await prisma.stop.groupBy({ by: ['classification'], where: { isPoi: true }, _count: true })
+    const categories = counts.map(c => ({ key: c.classification ?? 'Autre POI', name: c.classification ?? 'Autre POI', count: c._count })).sort((a, b) => b.count - a.count)
+    return reply.send({ categories, total: categories.reduce((n, c) => n + c.count, 0) })
   })
 
   app.get('/admin/explore/stops', async (req, reply) => {
@@ -542,7 +529,7 @@ export async function exploreRoutes(app: FastifyInstance) {
     const poiOnly = q.poi_only === 'true'
 
     const where: Record<string, unknown> = {}
-    if (poiOnly) where.locationType = 3
+    if (poiOnly) where.isPoi = true
     if (q.location_type !== undefined && q.location_type !== '') {
       const lt = parseInt(q.location_type, 10)
       if (lt === -1) where.locationType = null
@@ -557,24 +544,7 @@ export async function exploreRoutes(app: FastifyInstance) {
       ]
     }
 
-    // Filtre classification POI = en mémoire (desc / extras)
-    if (classification) {
-      const all = await prisma.stop.findMany({
-        where: { ...where, locationType: where.locationType ?? 3 },
-        orderBy: { name: 'asc' },
-      })
-      const filtered = all.filter((s) => stopClassification(s) === classification)
-      const pageItems = filtered.slice(offset, offset + limit).map(enrichStop)
-      const total = filtered.length
-      return reply.send({
-        items: pageItems,
-        total,
-        limit,
-        offset,
-        page: Math.floor(offset / limit) + 1,
-        pages: Math.max(Math.ceil(total / limit), 1),
-      })
-    }
+    if (classification) { where.isPoi = true; where.classification = classification === 'Autre POI' ? null : classification }
 
     const [items, total] = await Promise.all([
       prisma.stop.findMany({ where, take: limit, skip: offset, orderBy: { name: 'asc' } }),
@@ -608,25 +578,10 @@ export async function exploreRoutes(app: FastifyInstance) {
 
     // Lignes desservant cet arrêt (si stop_point/quay)
     let lines: ReturnType<typeof enrichRoute>[] = []
-    if (stop.locationType !== 3) {
-      const tripIds = await prisma.stopTime.findMany({
-        where: { stopId: stop.stopId },
-        select: { tripId: true },
-        distinct: ['tripId'],
-        take: 500,
-      })
-      if (tripIds.length > 0) {
-        const trips = await prisma.trip.findMany({
-          where: { tripId: { in: tripIds.map((t) => t.tripId) } },
-          select: { routeId: true },
-          distinct: ['routeId'],
-        })
-        const routes = await prisma.route.findMany({
-          where: { routeId: { in: trips.map((t) => t.routeId) } },
-          orderBy: { shortName: 'asc' },
-        })
-        lines = routes.map(enrichRoute)
-      }
+    if (!stop.isPoi) {
+      const routeIds = await prisma.$queryRaw<{ routeId: string }[]>`SELECT DISTINCT t.routeId FROM Trip t JOIN StopTime st ON st.tripId=t.tripId WHERE st.stopId=${stop.stopId}`
+      const routes = await prisma.route.findMany({ where: { routeId: { in: routeIds.map(r => r.routeId) } }, orderBy: { shortName: 'asc' } })
+      lines = routes.map(enrichRoute)
     }
 
     return reply.send({

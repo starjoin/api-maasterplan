@@ -1,0 +1,26 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs/promises')
+const path = require('node:path')
+const os = require('node:os')
+const AdmZip = require('adm-zip')
+process.env.RFU_API_TOKEN = 'fixture'
+const { extractZip } = require('../dist/archive.js')
+test('streaming ZIP preserves nested files and rejects duplicate entries', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'maasterplan-zip-'))
+  try {
+    const zip = new AdmZip()
+    zip.addFile('nested/stops.txt',Buffer.from('stop_id,stop_name\ns,Station\n'))
+    zip.addFile('extension.bin',Buffer.alloc(1024*1024,42))
+    const file = path.join(root,'feed.zip')
+    zip.writeZip(file)
+    const out = path.join(root,'out')
+    await fs.mkdir(out)
+    await extractZip(file,out)
+    assert.equal((await fs.readFile(path.join(out,'extension.bin'))).length,1024*1024)
+    assert.equal(await fs.readFile(path.join(out,'nested/stops.txt'),'utf8'),'stop_id,stop_name\ns,Station\n')
+    await assert.rejects(extractZip(file,out), /EEXIST/)
+    await fs.writeFile(file,'not a zip')
+    await assert.rejects(extractZip(file,out))
+  } finally { await fs.rm(root,{recursive:true,force:true}) }
+})

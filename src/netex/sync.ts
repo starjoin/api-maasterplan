@@ -1,3 +1,4 @@
+import { runImportInWorker } from '../import-runner.js'
 import { prisma, getActiveSource, getMetaId } from '../db.js'
 import { getSourceConfig } from '../config.js'
 import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
@@ -23,6 +24,7 @@ async function appendLog(jobId: string, message: string) {
   if (!job) return
   const logs = JSON.parse(job.logs) as string[]
   logs.push(`[${new Date().toISOString()}] ${message}`)
+  if (logs.length > 300) logs.splice(0, logs.length - 300)
   await prisma.importJob.update({ where: { id: job.id }, data: { logs: JSON.stringify(logs) } })
 }
 
@@ -31,6 +33,7 @@ export async function syncNetex(
   force = false,
   extractDirOverride?: string,
 ) {
+  if (process.env.IMPORT_WORKER !== '1') return runImportInWorker('netex', triggeredBy, force, extractDirOverride)
   if (isImportRunning()) {
     throw new Error('Un import est déjà en cours')
   }
@@ -44,7 +47,9 @@ export async function syncNetex(
   const src = getSourceConfig('netex')
   const metaId = getMetaId('netex')
 
-  const job = await prisma.importJob.create({
+  const job = process.env.IMPORT_JOB_ID
+      ? await prisma.importJob.findUniqueOrThrow({ where: { id: process.env.IMPORT_JOB_ID } })
+      : await prisma.importJob.create({
     data: { status: 'PENDING', triggeredBy, source: 'netex' },
   })
 
@@ -66,7 +71,7 @@ export async function syncNetex(
       rfuVersion = rfuInfo?.version ? String(rfuInfo.version) : zipMeta?.etag ?? null
 
       const meta = await prisma.datasetMeta.findUnique({ where: { id: metaId } })
-      if (!force && meta?.rfuUpdatedAt && rfuUpdatedAt && meta.rfuUpdatedAt === rfuUpdatedAt) {
+      if (!force && meta?.stats && JSON.parse(meta.stats).sourceFiles && meta?.rfuUpdatedAt && rfuUpdatedAt && meta.rfuUpdatedAt === rfuUpdatedAt) {
         await appendLog(job.id, 'Données NeTEx inchangées — import ignoré')
         await prisma.importJob.update({
           where: { id: job.id },
@@ -111,7 +116,7 @@ export async function syncNetex(
     await prisma.importJob.update({
       where: { id: job.id },
       data: {
-        status: 'COMPLETED',
+        status: 'VALIDATING',
         completedAt: new Date(),
         stats: JSON.stringify(stats),
       },

@@ -15,8 +15,20 @@ services:
       - HOST=0.0.0.0
       - PORT=3000
       - NODE_ENV=production
+      - NODE_OPTIONS=--max-old-space-size=384
+      - IMPORT_HEAP_MB=768
+      - IMPORT_RSS_MB=1400
+      - IMPORT_BATCH_SIZE=500
+      - AUTO_IMPORT_ON_START=false
+      - TMP_DIR=/app/data/tmp
     volumes:
       - maasterplan_data:/app/data
+    init: true
+    mem_limit: 2300m
+    mem_reservation: 512m
+    cpus: 1.0
+    pids_limit: 128
+    stop_grace_period: 30s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

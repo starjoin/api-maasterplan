@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma } from '../db.js'
+import { prisma, getActiveSource } from '../db.js'
 import { resolveEndpoint } from './resolver.js'
 import type { ResponseSchema } from './types.js'
 
@@ -14,13 +14,10 @@ export interface ResolvedEndpoint {
 }
 
 export class EndpointRegistry {
-  private routes: Array<{
-    id: string
-    path: string
-    method: string
-    responseSchema: string
-    segments: string[]
-  }> = []
+  private bySource = new Map<string, Array<{ id: string; path: string; method: string; responseSchema: string; segments: string[] }>>()
+  private get routes() { return this.bySource.get(getActiveSource()) ?? [] }
+  private set routes(value: Array<{ id: string; path: string; method: string; responseSchema: string; segments: string[] }>) { this.bySource.set(getActiveSource(), value) }
+
 
   async reload() {
     const endpoints = await prisma.apiEndpoint.findMany({

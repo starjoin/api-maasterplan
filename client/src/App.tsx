@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
+import Comparison from './pages/Comparison'
 import Dashboard from './pages/Dashboard'
 import ApiDesigner from './pages/ApiDesigner'
 import EndpointEditor from './pages/EndpointEditor'
@@ -15,6 +16,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
+          <Route path="comparison" element={<Comparison />} />
           <Route path="explorer" element={<Explorer />} />
           <Route path="explorer/lines/:id" element={<LineDetail />} />
           <Route path="explorer/stops/:id" element={<PoiDetail />} />

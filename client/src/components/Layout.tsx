@@ -5,6 +5,7 @@ import { api, type DataSource } from '../lib/api'
 
 const nav = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/comparison', label: 'GTFS ↔ NeTEx', icon: Database },
   { to: '/explorer', label: 'Explorateur', icon: Database },
   { to: '/api-designer', label: 'API Designer', icon: Code2 },
   { to: '/documentation', label: 'Documentation', icon: BookOpen },

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 
 const STATUS_LABELS: Record<string, { label: string; color: string; icon: typeof CheckCircle2 }> = {
+  VALIDATING: { label: 'Validation', color: 'text-blue-600', icon: Loader2 },
   COMPLETED: { label: 'Terminé', color: 'text-green-600', icon: CheckCircle2 },
   FAILED: { label: 'Échoué', color: 'text-red-600', icon: XCircle },
   SKIPPED: { label: 'Ignoré', color: 'text-gray-500', icon: SkipForward },
@@ -146,6 +147,7 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {data.importRunning && <p className="mb-4 p-3 bg-green-50 text-green-800 rounded-lg text-sm">La version publiée reste accessible pendant le nouvel import. La bascule aura lieu après validation.</p>}
       {data.importRunning && progress && progress.phase !== 'idle' && (
         <DownloadProgressBlock progress={progress} />
       )}

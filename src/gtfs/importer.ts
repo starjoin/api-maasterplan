@@ -2,7 +2,7 @@ import { prisma } from '../db.js'
 import { config } from '../config.js'
 import type { GtfsFiles, ImportStats } from './types.js'
 
-type LogFn = (msg: string) => void
+type LogFn = (msg: string) => void | Promise<void>
 
 type ExtrasMaps = {
   routeExtras?: Record<string, Record<string, unknown>>
@@ -14,6 +14,7 @@ export async function importGtfsToDb(
   gtfs: GtfsFiles,
   log: LogFn = console.log,
   extras: ExtrasMaps = {},
+  clear = true,
 ): Promise<ImportStats> {
   const stats: ImportStats = {
     agencies: 0,
@@ -33,8 +34,8 @@ export async function importGtfsToDb(
 
   const batchSize = config.IMPORT_BATCH_SIZE
 
-  log('Nettoyage des données existantes...')
-  await prisma.$transaction([
+  await log('Nettoyage des données existantes...')
+  if (clear) await prisma.$transaction([
     prisma.stopTime.deleteMany(),
     prisma.shape.deleteMany(),
     prisma.trip.deleteMany(),
@@ -51,7 +52,7 @@ export async function importGtfsToDb(
 
   const agencies = gtfs['agency.txt'] ?? []
   if (agencies.length > 0) {
-    log(`Import de ${agencies.length} agences...`)
+    await log(`Import de ${agencies.length} agences...`)
     await prisma.agency.createMany({
       data: agencies.map((a, i) => ({
         agencyId: a.agency_id || String(i),
@@ -68,11 +69,13 @@ export async function importGtfsToDb(
 
   const stops = gtfs['stops.txt'] ?? []
   if (stops.length > 0) {
-    log(`Import de ${stops.length} arrêts / POI...`)
+    await log(`Import de ${stops.length} arrêts / POI...`)
     await batchInsert(stops, batchSize, (chunk) =>
       prisma.stop.createMany({
         data: chunk.map((s) => ({
           stopId: s.stop_id,
+          isPoi: extras.stopExtras?.[s.stop_id]?.netex_type === 'PointOfInterest',
+          classification: extras.stopExtras?.[s.stop_id]?.netex_type === 'PointOfInterest' ? s.stop_desc ?? null : null,
           code: s.stop_code || null,
           name: s.stop_name,
           desc: s.stop_desc || null,
@@ -90,12 +93,12 @@ export async function importGtfsToDb(
       }),
     )
     stats.stops = stops.length
-    stats.pois = stops.filter((s) => s.location_type === '3').length
+    stats.pois = stops.filter((s) => extras.stopExtras?.[s.stop_id]?.netex_type === 'PointOfInterest').length
   }
 
   const fareZones = gtfs['fare_zones.txt'] ?? []
   if (fareZones.length > 0) {
-    log(`Import de ${fareZones.length} zones tarifaires...`)
+    await log(`Import de ${fareZones.length} zones tarifaires...`)
     await batchInsert(fareZones, batchSize, (chunk) =>
       prisma.fareZone.createMany({
         data: chunk.map((z) => ({
@@ -112,7 +115,7 @@ export async function importGtfsToDb(
 
   const fareAttributes = gtfs['fare_attributes.txt'] ?? []
   if (fareAttributes.length > 0) {
-    log(`Import de ${fareAttributes.length} attributs tarifaires...`)
+    await log(`Import de ${fareAttributes.length} attributs tarifaires...`)
     await batchInsert(fareAttributes, batchSize, (chunk) =>
       prisma.fareAttribute.createMany({
         data: chunk.map((f) => ({
@@ -130,7 +133,7 @@ export async function importGtfsToDb(
 
   const fareRules = gtfs['fare_rules.txt'] ?? []
   if (fareRules.length > 0) {
-    log(`Import de ${fareRules.length} règles tarifaires...`)
+    await log(`Import de ${fareRules.length} règles tarifaires...`)
     await batchInsert(fareRules, batchSize, (chunk) =>
       prisma.fareRule.createMany({
         data: chunk.map((r) => ({
@@ -147,7 +150,7 @@ export async function importGtfsToDb(
 
   const transfers = gtfs['transfers.txt'] ?? []
   if (transfers.length > 0) {
-    log(`Import de ${transfers.length} correspondances...`)
+    await log(`Import de ${transfers.length} correspondances...`)
     await batchInsert(transfers, batchSize, (chunk) =>
       prisma.transfer.createMany({
         data: chunk.map((t) => ({
@@ -163,7 +166,7 @@ export async function importGtfsToDb(
 
   const routes = gtfs['routes.txt'] ?? []
   if (routes.length > 0) {
-    log(`Import de ${routes.length} lignes...`)
+    await log(`Import de ${routes.length} lignes...`)
     await batchInsert(routes, batchSize, (chunk) =>
       prisma.route.createMany({
         data: chunk.map((r) => ({
@@ -188,7 +191,7 @@ export async function importGtfsToDb(
 
   const calendars = gtfs['calendar.txt'] ?? []
   if (calendars.length > 0) {
-    log(`Import de ${calendars.length} calendriers...`)
+    await log(`Import de ${calendars.length} calendriers...`)
     await batchInsert(calendars, batchSize, (chunk) =>
       prisma.calendar.createMany({
         data: chunk.map((c) => ({
@@ -210,7 +213,7 @@ export async function importGtfsToDb(
 
   const calendarDates = gtfs['calendar_dates.txt'] ?? []
   if (calendarDates.length > 0) {
-    log(`Import de ${calendarDates.length} exceptions calendrier...`)
+    await log(`Import de ${calendarDates.length} exceptions calendrier...`)
     await batchInsert(calendarDates, batchSize, (chunk) =>
       prisma.calendarDate.createMany({
         data: chunk.map((cd) => ({
@@ -225,7 +228,7 @@ export async function importGtfsToDb(
 
   const trips = gtfs['trips.txt'] ?? []
   if (trips.length > 0) {
-    log(`Import de ${trips.length} courses...`)
+    await log(`Import de ${trips.length} courses...`)
     await batchInsert(trips, batchSize, (chunk) =>
       prisma.trip.createMany({
         data: chunk.map((t) => ({
@@ -247,7 +250,7 @@ export async function importGtfsToDb(
 
   const stopTimes = gtfs['stop_times.txt'] ?? []
   if (stopTimes.length > 0) {
-    log(`Import de ${stopTimes.length} horaires (peut prendre quelques minutes)...`)
+    await log(`Import de ${stopTimes.length} horaires (peut prendre quelques minutes)...`)
     let imported = 0
     await batchInsert(stopTimes, batchSize, async (chunk) => {
       await prisma.stopTime.createMany({
@@ -265,14 +268,14 @@ export async function importGtfsToDb(
         })),
       })
       imported += chunk.length
-      if (imported % 50_000 === 0) log(`  ${imported} / ${stopTimes.length} horaires...`)
+      if (imported % 50_000 === 0) await log(`  ${imported} / ${stopTimes.length} horaires...`)
     })
     stats.stopTimes = stopTimes.length
   }
 
   const shapes = gtfs['shapes.txt'] ?? []
   if (shapes.length > 0) {
-    log(`Import de ${shapes.length} points de tracé...`)
+    await log(`Import de ${shapes.length} points de tracé...`)
     await batchInsert(shapes, batchSize, (chunk) =>
       prisma.shape.createMany({
         data: chunk.map((s) => ({
@@ -301,7 +304,7 @@ export async function importGtfsLargeFilesFromDir(
 
   const stopTimesPath = gtfsFilePath(extractDir, 'stop_times.txt')
   if (stopTimesPath) {
-    log('Import streaming stop_times.txt…')
+    await log('Import streaming stop_times.txt…')
     let imported = 0
     stats.stopTimes = await forEachCsvBatch(stopTimesPath, batchSize, async (chunk) => {
       await prisma.stopTime.createMany({
@@ -319,14 +322,14 @@ export async function importGtfsLargeFilesFromDir(
         })),
       })
       imported += chunk.length
-      if (imported % 100_000 === 0) log(`  ${imported.toLocaleString('fr-FR')} horaires…`)
+      if (imported % 100_000 === 0) await log(`  ${imported.toLocaleString('fr-FR')} horaires…`)
     })
-    log(`  ${stats.stopTimes.toLocaleString('fr-FR')} horaires importés`)
+    await log(`  ${stats.stopTimes.toLocaleString('fr-FR')} horaires importés`)
   }
 
   const shapesPath = gtfsFilePath(extractDir, 'shapes.txt')
   if (shapesPath) {
-    log('Import streaming shapes.txt…')
+    await log('Import streaming shapes.txt…')
     let imported = 0
     stats.shapes = await forEachCsvBatch(shapesPath, batchSize, async (chunk) => {
       await prisma.shape.createMany({
@@ -339,9 +342,9 @@ export async function importGtfsLargeFilesFromDir(
         })),
       })
       imported += chunk.length
-      if (imported % 100_000 === 0) log(`  ${imported.toLocaleString('fr-FR')} points de tracé…`)
+      if (imported % 100_000 === 0) await log(`  ${imported.toLocaleString('fr-FR')} points de tracé…`)
     })
-    log(`  ${stats.shapes.toLocaleString('fr-FR')} points de tracé importés`)
+    await log(`  ${stats.shapes.toLocaleString('fr-FR')} points de tracé importés`)
   }
 }
 

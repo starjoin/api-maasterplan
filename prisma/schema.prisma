@@ -53,6 +53,8 @@ model Agency {
 model Stop {
   id                 String  @id @default(cuid())
   stopId             String  @unique
+  isPoi              Boolean @default(false)
+  classification     String?
   code               String?
   name               String
   desc               String?
@@ -68,6 +70,7 @@ model Stop {
   @@index([name])
   @@index([lat, lon])
   @@index([locationType])
+  @@index([isPoi, classification])
 }
 
 model Route {
@@ -120,6 +123,8 @@ model StopTime {
 
   @@index([tripId])
   @@index([stopId])
+  @@index([tripId, stopSequence])
+  @@index([stopId, tripId])
 }
 
 model Calendar {
@@ -154,6 +159,7 @@ model Shape {
   distTraveled Float?
 
   @@index([shapeId])
+  @@index([shapeId, ptSequence])
 }
 
 // ─── Tarifs / correspondances (GTFS fare_* / transfers + NeTEx FareZone) ──────
@@ -225,4 +231,38 @@ model ApiParam {
   required     Boolean     @default(false)
   description  String?
   defaultValue String?
+}
+
+// Original fields/entities, including extensions not mapped to the transit API.
+model SourceRecord {
+  id       Int @id @default(autoincrement())
+  file     String
+  kind     String
+  entityId String?
+  data     String
+  @@index([kind, id])
+  @@index([kind, entityId])
+}
+model SourceFile {
+  name String @id
+  bytes BigInt
+  sha256 String
+  records Int
+  fields String
+}
+model SourceKind {
+  kind String @id
+  count Int
+  fields String
+}
+model NetexReference {
+  key String @id
+  value String
+}
+
+model LineSummary {
+  routeId String @id
+  openingTime String?
+  closingTime String?
+  representatives String
 }

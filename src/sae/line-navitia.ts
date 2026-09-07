@@ -1,4 +1,4 @@
-import { prisma } from '../db.js'
+import { prisma, getActiveSource } from '../db.js'
 import { resolveCommercialModeNavitia } from './commercial-modes.js'
 import { modeFromGtfsType } from './modes.js'
 
@@ -98,7 +98,7 @@ async function buildDirectionRoute(
   const dirType = directionType(directionId)
   const tripIds = trips.map((t) => t.tripId)
 
-  const counts = await prisma.stopTime.groupBy({
+  const counts = trips.length === 1 ? [] : await prisma.stopTime.groupBy({
     by: ['tripId'],
     where: { tripId: { in: tripIds } },
     _count: { tripId: true },
@@ -148,7 +148,7 @@ async function buildDirectionRoute(
   const codes = [
     { type: 'gtfs_trip_id', value: bestTrip.tripId },
     ...(bestTrip.shapeId ? [{ type: 'gtfs_shape_id', value: bestTrip.shapeId }] : []),
-    { type: 'source', value: 'gtfs' },
+    { type: 'source', value: getActiveSource() },
     { type: 'direction_id', value: String(directionId ?? 0) },
   ]
 
@@ -201,8 +201,10 @@ export async function buildNavitiaLine(route: RouteRow, options: BuildOptions = 
   const commercial = resolveCommercialMode(route)
   const co2 = CO2_BY_PHYSICAL[phys.id] ?? 103.5
 
+  const summary = await prisma.lineSummary.findUnique({ where: { routeId: route.routeId } })
+  const representatives = summary ? JSON.parse(summary.representatives) as string[] : null
   const trips = await prisma.trip.findMany({
-    where: { routeId: route.routeId },
+    where: { routeId: route.routeId, ...(representatives ? { tripId: { in: representatives } } : {}) },
     select: { tripId: true, headsign: true, shapeId: true, directionId: true },
     take: 800,
   })
@@ -211,7 +213,10 @@ export async function buildNavitiaLine(route: RouteRow, options: BuildOptions = 
   let opening_time: string | null = null
   let closing_time: string | null = null
 
-  if (trips.length > 0) {
+  if (summary) {
+    opening_time = toNavitiaTime(summary.openingTime)
+    closing_time = toNavitiaTime(summary.closingTime)
+  } else if (trips.length > 0) {
     const sampleTripIds = trips.slice(0, 120).map((t) => t.tripId)
     const [minDep, maxArr] = await Promise.all([
       prisma.stopTime.findFirst({
@@ -269,7 +274,7 @@ export async function buildNavitiaLine(route: RouteRow, options: BuildOptions = 
   const codes = [
     { type: 'gtfs_id', value: route.routeId },
     { type: 'gtfs_short_name', value: code },
-    { type: 'source', value: 'gtfs' },
+    { type: 'source', value: getActiveSource() },
     { type: 'external_code', value: code },
     ...(route.url ? [{ type: 'url', value: route.url }] : []),
   ]
@@ -307,7 +312,7 @@ export async function buildNavitiaLine(route: RouteRow, options: BuildOptions = 
       links: [] as unknown[],
       codes: [
         { type: 'gtfs_id', value: networkId },
-        { type: 'source', value: 'gtfs' },
+        { type: 'source', value: getActiveSource() },
         ...(agency?.url ? [{ type: 'url', value: agency.url }] : []),
         ...(agency?.phone ? [{ type: 'phone', value: agency.phone }] : []),
         ...(agency?.timezone ? [{ type: 'timezone', value: agency.timezone }] : []),

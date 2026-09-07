@@ -1,3 +1,5 @@
+import { registerDatabaseScope } from './db.js'
+import { inventoryRoutes } from './admin/inventory.js'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import staticFiles from '@fastify/static'
@@ -21,6 +23,8 @@ export async function buildServer() {
       level: config.NODE_ENV === 'development' ? 'info' : 'warn',
     },
   })
+
+  registerDatabaseScope(app)
 
   await app.register(cors, {
     origin: config.NODE_ENV === 'development' ? true : true,
@@ -50,6 +54,7 @@ export async function buildServer() {
     // Client dist pas encore buildé
   }
 
+  await app.register(inventoryRoutes)
   await app.register(dashboardRoutes)
   await app.register(sourceRoutes)
   await app.register(importRoutes)

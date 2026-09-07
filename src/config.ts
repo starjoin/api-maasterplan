@@ -5,7 +5,7 @@ import { z } from 'zod'
 
 const envLocal = path.resolve(process.cwd(), '.env.local')
 if (fs.existsSync(envLocal)) {
-  dotenvConfig({ path: envLocal, override: true })
+  dotenvConfig({ path: envLocal, override: false })
 }
 dotenvConfig()
 
@@ -37,7 +37,12 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   IMPORT_CRON: z.string().default('0 3 * * *'),
   TMP_DIR: z.string().default('/tmp/maasterplan'),
-  IMPORT_BATCH_SIZE: z.coerce.number().default(2000),
+  LOCAL_IMPORT_ROOT: z.string().default(path.resolve('data/imports')),
+  IMPORT_BATCH_SIZE: z.coerce.number().int().min(1).max(2000).default(500),
+  IMPORT_HEAP_MB: z.coerce.number().int().min(128).max(1536).default(768),
+  IMPORT_RSS_MB: z.coerce.number().int().min(256).max(2048).default(1400),
+  IMPORT_MAX_MINUTES: z.coerce.number().int().min(1).default(360),
+  IMPORT_MAX_BYTES: z.coerce.number().positive().default(20 * 1024 ** 3),
   AUTO_IMPORT_ON_START: z
     .enum(['true', 'false'])
     .default('true')

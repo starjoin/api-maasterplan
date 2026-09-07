@@ -1,7 +1,9 @@
+import { stopImportWorker } from './import-runner.js'
 import { config, DATA_SOURCES } from './config.js'
 import { buildServer } from './server.js'
 import {
   ensureSourceDatabase,
+  recoverImports,
   getActiveSource,
   getMetaId,
   initDatabase,
@@ -39,6 +41,16 @@ async function main() {
     })
   }
 
+  for (const source of DATA_SOURCES) await recoverImports(source)
+  const shutdown = async () => {
+    stopImportWorker()
+    await app.close()
+    process.exit(0)
+  }
+  process.once('SIGTERM', () => void shutdown())
+  process.once('SIGINT', () => void shutdown())
+
+  for (const source of DATA_SOURCES) await withSourcePrisma(source, () => import('./engine/index.js').then(engine => engine.reloadEndpoints(app)))
   startScheduler(app)
   startVehicleMonitoringPoller(app.log)
 
@@ -69,20 +81,7 @@ async function main() {
       )
     }
 
-    // Jobs interrompus par un restart → marquer FAILED
-    const stuck = await prisma.importJob.updateMany({
-      where: {
-        status: { in: ['PENDING', 'DOWNLOADING', 'PARSING', 'IMPORTING'] },
-      },
-      data: {
-        status: 'FAILED',
-        completedAt: new Date(),
-        errorMessage: 'Interrompu (redémarrage serveur)',
-      },
-    })
-    if (stuck.count > 0) {
-      console.log(`[Import] ${stuck.count} job(s) interrompu(s) marqué(s) FAILED`)
-    }
+
   }
 }
 

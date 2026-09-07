@@ -31,11 +31,15 @@ const SMALL_GTFS_FILES = [
 ] as const
 
 const CSV_OPTS = {
-  columns: true as const,
+  columns: (headers: string[]) => {
+    if (new Set(headers).size !== headers.length) throw new Error('Colonnes CSV dupliquées')
+    return headers
+  },
   skip_empty_lines: true,
   trim: true,
-  relax_column_count: true,
+  relax_column_count: false,
   bom: true,
+  max_record_size: 1024 * 1024,
 }
 
 function readCsvSync(filePath: string): Record<string, string>[] {
@@ -110,12 +114,14 @@ export async function forEachCsvBatch<T extends Record<string, string>>(
   let total = 0
   let batch: T[] = []
 
-  const parser = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 }).pipe(
+  const input = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 })
+  const parser = input.pipe(
     parse({
       ...CSV_OPTS,
     }),
   )
 
+  input.on('error', error => parser.destroy(error))
   for await (const row of parser) {
     batch.push(row as T)
     if (batch.length >= batchSize) {

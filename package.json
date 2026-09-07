@@ -19,25 +19,29 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "client:dev": "cd client && npm run dev",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test": "npm run build && node --test tests/*.test.cjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
     "@fastify/static": "^7.0.4",
     "@prisma/client": "^5.22.0",
-    "adm-zip": "^0.5.16",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "fast-xml-parser": "^5.11.1",
     "fastify": "^4.28.1",
     "node-cron": "^3.0.3",
     "prisma": "^5.22.0",
+    "saxes": "^6.0.0",
+    "yauzl": "^3.4.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.5",
     "@types/node": "^22.10.1",
     "@types/node-cron": "^3.0.11",
+    "@types/yauzl": "^3.4.0",
+    "adm-zip": "^0.6.0",
     "concurrently": "^10.0.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

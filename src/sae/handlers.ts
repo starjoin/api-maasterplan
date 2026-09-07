@@ -7,7 +7,7 @@ import { buildNavitiaLine, buildNavitiaLines } from './line-navitia.js'
 type Query = Record<string, string | undefined>
 
 function parseLimit(q: Query, def = 50, max = 200) {
-  return Math.min(parseInt(q.limit ?? String(def), 10) || def, max)
+  return Math.max(1, Math.min(parseInt(q.limit ?? String(def), 10) || def, max))
 }
 
 function parseOffset(q: Query) {
@@ -63,13 +63,14 @@ function formatStop(s: {
   lat: number | null
   lon: number | null
   locationType: number | null
+  isPoi?: boolean
   parentStation?: string | null
   wheelchairBoarding?: number | null
   zoneId: string | null
   url?: string | null
 }) {
   const isArea = s.locationType === 1
-  const isPoi = s.locationType === 3
+  const isPoi = !!s.isPoi
   return {
     id: s.stopId,
     name: s.name,
@@ -187,8 +188,11 @@ export async function lineThermometer(routeId: string, q: Query) {
 
   const directionId = q.direction_id !== undefined ? parseInt(q.direction_id, 10) : undefined
 
+  const summary = await prisma.lineSummary.findUnique({ where: { routeId } })
+  const representativeIds = summary ? JSON.parse(summary.representatives) as string[] : null
   const trips = await prisma.trip.findMany({
     where: {
+      ...(representativeIds ? { tripId: { in: representativeIds } } : {}),
       routeId,
       ...(directionId !== undefined && !Number.isNaN(directionId) ? { directionId } : {}),
     },
@@ -212,7 +216,7 @@ export async function lineThermometer(routeId: string, q: Query) {
 
   for (const [dir, dirTrips] of byDir) {
     const tripIds = dirTrips.map((t) => t.tripId)
-    const counts = await prisma.stopTime.groupBy({
+    const counts = dirTrips.length === 1 ? [] : await prisma.stopTime.groupBy({
       by: ['tripId'],
       where: { tripId: { in: tripIds } },
       _count: { tripId: true },
@@ -317,24 +321,9 @@ export async function lineSchedules(routeId: string, q: Query) {
   const fromTime = q.from_datetime?.slice(11, 19) ?? q.from_time
   const stopId = q.stop_point_id ?? q.stop_id
 
-  const trips = await prisma.trip.findMany({
-    where: { routeId },
-    select: { tripId: true, headsign: true, directionId: true, serviceId: true },
-    take: 200,
-  })
-
-  const tripMap = new Map(trips.map((t) => [t.tripId, t]))
-  const tripIds = trips.map((t) => t.tripId)
-
-  const where: Record<string, unknown> = { tripId: { in: tripIds } }
-  if (stopId) where.stopId = stopId
-  if (fromTime) where.departureTime = { gte: fromTime }
-
-  const stopTimes = await prisma.stopTime.findMany({
-    where,
-    orderBy: [{ departureTime: 'asc' }],
-    take: limit,
-  })
+  const stopTimes = await prisma.$queryRaw<import('@prisma/client').StopTime[]>`SELECT s.* FROM StopTime s JOIN Trip t ON t.tripId=s.tripId WHERE t.routeId=${routeId} AND (${stopId ?? null} IS NULL OR s.stopId=${stopId ?? null}) AND (${fromTime ?? null} IS NULL OR s.departureTime>=${fromTime ?? null}) ORDER BY s.departureTime, s.id LIMIT ${limit}`
+  const trips = await prisma.trip.findMany({ where: { tripId: { in: [...new Set(stopTimes.map(s => s.tripId))] } } })
+  const tripMap = new Map(trips.map(t => [t.tripId, t]))
 
   const stopIds = [...new Set(stopTimes.map((st) => st.stopId))]
   const stops = await prisma.stop.findMany({ where: { stopId: { in: stopIds } } })
@@ -392,23 +381,8 @@ export async function getStopPoint(stopId: string) {
   const row = await prisma.stop.findUnique({ where: { stopId } })
   if (!row) return null
 
-  // Lignes desservant cet arrêt
-  const stopTimes = await prisma.stopTime.findMany({
-    where: { stopId },
-    select: { tripId: true },
-    distinct: ['tripId'],
-    take: 500,
-  })
-  const tripIds = stopTimes.map((st) => st.tripId)
-  const trips = await prisma.trip.findMany({
-    where: { tripId: { in: tripIds } },
-    select: { routeId: true },
-    distinct: ['routeId'],
-  })
-  const routes = await prisma.route.findMany({
-    where: { routeId: { in: trips.map((t) => t.routeId) } },
-    orderBy: { sortOrder: 'asc' },
-  })
+  const ids = await prisma.$queryRaw<{ routeId: string }[]>`SELECT DISTINCT t.routeId FROM Trip t JOIN StopTime s ON s.tripId=t.tripId WHERE s.stopId=${stopId}`
+  const routes = await prisma.route.findMany({ where: { routeId: { in: ids.map(r => r.routeId) } }, orderBy: { sortOrder: 'asc' } })
 
   return {
     stop_point: formatStop(row),
@@ -425,27 +399,7 @@ export async function stopSchedules(stopId: string, q: Query) {
   const fromTime = q.from_datetime?.slice(11, 19) ?? q.from_time
   const routeId = q.line_id ?? q.route_id
 
-  let tripFilter: string[] | undefined
-  if (routeId) {
-    const trips = await prisma.trip.findMany({
-      where: { routeId },
-      select: { tripId: true },
-    })
-    tripFilter = trips.map((t) => t.tripId)
-    if (tripFilter.length === 0) {
-      return { stop_point: formatStop(stop), stop_schedules: [] }
-    }
-  }
-
-  const where: Record<string, unknown> = { stopId }
-  if (tripFilter) where.tripId = { in: tripFilter }
-  if (fromTime) where.departureTime = { gte: fromTime }
-
-  const stopTimes = await prisma.stopTime.findMany({
-    where,
-    orderBy: { departureTime: 'asc' },
-    take: limit,
-  })
+  const stopTimes = await prisma.$queryRaw<import('@prisma/client').StopTime[]>`SELECT s.* FROM StopTime s JOIN Trip t ON t.tripId=s.tripId WHERE s.stopId=${stopId} AND (${routeId ?? null} IS NULL OR t.routeId=${routeId ?? null}) AND (${fromTime ?? null} IS NULL OR s.departureTime>=${fromTime ?? null}) ORDER BY s.departureTime, s.id LIMIT ${limit}`
 
   const trips = await prisma.trip.findMany({
     where: { tripId: { in: stopTimes.map((st) => st.tripId) } },
@@ -492,7 +446,7 @@ export async function places(q: Query) {
       typeOr.push({ locationType: 0 }, { locationType: null })
     }
     if (types.includes('stop_area')) typeOr.push({ locationType: 1 })
-    if (types.includes('poi')) typeOr.push({ locationType: 3 })
+    if (types.includes('poi')) typeOr.push({ isPoi: true })
 
     const stops = await prisma.stop.findMany({
       where: {
@@ -513,7 +467,7 @@ export async function places(q: Query) {
     })
     for (const s of stops) {
       const embedded =
-        s.locationType === 3 ? 'poi' : s.locationType === 1 ? 'stop_area' : 'stop_point'
+        s.isPoi ? 'poi' : s.locationType === 1 ? 'stop_area' : 'stop_point'
       placesOut.push({
         id: s.stopId,
         name: s.name,
@@ -587,7 +541,7 @@ export async function placesNearby(q: Query) {
   return {
     places_nearby: scored.map(({ stop, distance: d }) => {
       const embedded =
-        stop.locationType === 3 ? 'poi' : stop.locationType === 1 ? 'stop_area' : 'stop_point'
+        stop.isPoi ? 'poi' : stop.locationType === 1 ? 'stop_area' : 'stop_point'
       return {
         distance: Math.round(d),
         embedded_type: embedded,
@@ -623,7 +577,7 @@ export async function listPoi(q: Query) {
   } else if (q.poi_type === 'stop_area' || q.poi_type === 'station') {
     and.push({ locationType: 1 })
   } else {
-    and.push({ locationType: 3 })
+    and.push({ isPoi: true })
   }
 
   if (q.classification) {
@@ -656,6 +610,7 @@ function formatPoi(s: {
   lat: number | null
   lon: number | null
   locationType: number | null
+  isPoi?: boolean
   code: string | null
   extras: string | null
   zoneId: string | null
@@ -674,7 +629,7 @@ function formatPoi(s: {
       ? [s.desc]
       : []
   const poiType =
-    s.locationType === 3
+    s.isPoi
       ? 'poi'
       : s.locationType === 1
         ? 'stop_area'

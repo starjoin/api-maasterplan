@@ -20,6 +20,8 @@ import type {
 
 const parser = new XMLParser({
   ignoreAttributes: false,
+  parseTagValue: false,
+  parseAttributeValue: false,
   attributeNamePrefix: '@_',
   removeNSPrefix: true,
   isArray: (name) =>
@@ -168,11 +170,11 @@ function firstFareZoneId(node: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-export function parseStopsFile(filePath: string): {
+export function parseStopsFile(filePath: string, document?: unknown): {
   stops: GtfsStopRow[]
   stopExtras: Record<string, NetexExtras>
 } {
-  const doc = parseNetexFile(filePath)
+  const doc = document ?? parseNetexFile(filePath)
   const stops: GtfsStopRow[] = []
   const stopExtras: Record<string, NetexExtras> = {}
 
@@ -258,12 +260,12 @@ export function parseStopsFile(filePath: string): {
 }
 
 /** POI NeTEx → Stop location_type=3 (generic node GTFS) */
-export function parsePoiFile(filePath: string): {
+export function parsePoiFile(filePath: string, document?: unknown): {
   stops: GtfsStopRow[]
   stopExtras: Record<string, NetexExtras>
 } {
-  if (!fs.existsSync(filePath)) return { stops: [], stopExtras: {} }
-  const doc = parseNetexFile(filePath)
+  if (!document && !fs.existsSync(filePath)) return { stops: [], stopExtras: {} }
+  const doc = document ?? parseNetexFile(filePath)
   const stops: GtfsStopRow[] = []
   const stopExtras: Record<string, NetexExtras> = {}
 
@@ -308,12 +310,12 @@ export function parsePoiFile(filePath: string): {
   return { stops, stopExtras }
 }
 
-export function parseFareFile(filePath: string): {
+export function parseFareFile(filePath: string, document?: unknown): {
   zones: GtfsFareZoneRow[]
   fareZoneExtras: Record<string, NetexExtras>
 } {
-  if (!fs.existsSync(filePath)) return { zones: [], fareZoneExtras: {} }
-  const doc = parseNetexFile(filePath)
+  if (!document && !fs.existsSync(filePath)) return { zones: [], fareZoneExtras: {} }
+  const doc = document ?? parseNetexFile(filePath)
   const zones: GtfsFareZoneRow[] = []
   const fareZoneExtras: Record<string, NetexExtras> = {}
 
@@ -340,9 +342,9 @@ export function parseFareFile(filePath: string): {
   return { zones, fareZoneExtras }
 }
 
-export function parseOperatorsFile(filePath: string): GtfsAgencyRow[] {
-  if (!fs.existsSync(filePath)) return []
-  const doc = parseNetexFile(filePath)
+export function parseOperatorsFile(filePath: string, document?: unknown): GtfsAgencyRow[] {
+  if (!document && !fs.existsSync(filePath)) return []
+  const doc = document ?? parseNetexFile(filePath)
   const agencies: GtfsAgencyRow[] = []
   for (const op of findAll(doc, 'Operator')) {
     const id = attr(op, 'id')
@@ -357,9 +359,9 @@ export function parseOperatorsFile(filePath: string): GtfsAgencyRow[] {
 }
 
 /** Networks NeTEx → agences complémentaires */
-export function parseNetworkFile(filePath: string): GtfsAgencyRow[] {
-  if (!fs.existsSync(filePath)) return []
-  const doc = parseNetexFile(filePath)
+export function parseNetworkFile(filePath: string, document?: unknown): GtfsAgencyRow[] {
+  if (!document && !fs.existsSync(filePath)) return []
+  const doc = document ?? parseNetexFile(filePath)
   const agencies: GtfsAgencyRow[] = []
   for (const net of findAll(doc, 'Network')) {
     const id = attr(net, 'id')
@@ -375,7 +377,7 @@ export function parseNetworkFile(filePath: string): GtfsAgencyRow[] {
 
 type PatternStop = { order: number; sspRef: string; stopPointInPatternId: string }
 
-export function parseLineFile(filePath: string): {
+export function parseLineFile(filePath: string, document?: unknown): {
   routes: GtfsRouteRow[]
   trips: GtfsTripRow[]
   stopTimes: GtfsStopTimeRow[]
@@ -383,7 +385,7 @@ export function parseLineFile(filePath: string): {
   routeExtras: Record<string, NetexExtras>
   sspToStop: Record<string, string>
 } {
-  const doc = parseNetexFile(filePath)
+  const doc = document ?? parseNetexFile(filePath)
   const routes: GtfsRouteRow[] = []
   const trips: GtfsTripRow[] = []
   const stopTimes: GtfsStopTimeRow[] = []
@@ -491,29 +493,13 @@ export function parseLineFile(filePath: string): {
     const jpRef = refOf(sj.JourneyPatternRef) ?? refOf(sj.ServiceJourneyPatternRef)
     const dayType =
       refOf(asArray((sj.dayTypes as { DayTypeRef?: unknown } | undefined)?.DayTypeRef)[0]) ??
-      'ALWAYS'
+      ''
     const lineRef = refOf(sj.LineRef) ?? defaultLineId
-    if (!lineRef) continue
+    if (!lineRef) throw new Error(`ServiceJourney ${tripId} sans ligne résolue`)
 
     const netexRouteId = jpRef ? patternRoute.get(jpRef) : undefined
     const direction = directionToGtfs(netexRouteId ? routeDirection.get(netexRouteId) : undefined)
     const headsign = text(sj.Name) ?? (jpRef ? patternName.get(jpRef) : undefined)
-
-    if (!calendarIds.has(dayType)) {
-      calendarIds.add(dayType)
-      calendars.push({
-        service_id: dayType,
-        monday: '1',
-        tuesday: '1',
-        wednesday: '1',
-        thursday: '1',
-        friday: '1',
-        saturday: '1',
-        sunday: '1',
-        start_date: '20240101',
-        end_date: '20301231',
-      })
-    }
 
     trips.push({
       trip_id: tripId,
@@ -536,33 +522,19 @@ export function parseLineFile(filePath: string): {
       const spijp = refOf(pt.StopPointInJourneyPatternRef)
       const ssp = spijp ? spijpToSsp.get(spijp) : undefined
       const stopId = ssp ? sspToStop[ssp] ?? ssp : undefined
-      if (!stopId) continue
+      if (!stopId) throw new Error(`Horaire non résolu pour ${tripId} : ${spijp}`)
       seq += 1
-      const arrival = text(pt.ArrivalTime) ?? text(pt.DepartureTime) ?? '00:00:00'
+      const arrival = text(pt.ArrivalTime) ?? text(pt.DepartureTime)
+      if (!arrival) throw new Error(`Horaire sans heure : ${tripId}`)
       const departure = text(pt.DepartureTime) ?? arrival
       stopTimes.push({
         trip_id: tripId,
-        arrival_time: arrival.length === 5 ? `${arrival}:00` : arrival,
-        departure_time: departure.length === 5 ? `${departure}:00` : departure,
+        arrival_time: withDayOffset(arrival, text(pt.ArrivalDayOffset) ?? text(pt.DepartureDayOffset)),
+        departure_time: withDayOffset(departure, text(pt.DepartureDayOffset) ?? text(pt.ArrivalDayOffset)),
         stop_id: stopId,
         stop_sequence: String(seq),
       })
     }
-  }
-
-  if (!calendarIds.has('ALWAYS') && trips.some((t) => t.service_id === 'ALWAYS')) {
-    calendars.push({
-      service_id: 'ALWAYS',
-      monday: '1',
-      tuesday: '1',
-      wednesday: '1',
-      thursday: '1',
-      friday: '1',
-      saturday: '1',
-      sunday: '1',
-      start_date: '20240101',
-      end_date: '20301231',
-    })
   }
 
   return { routes, trips, stopTimes, calendars, routeExtras, sspToStop }
@@ -671,4 +643,10 @@ export function buildNetexDataset(extractDir: string, log: (m: string) => void):
     stopExtras,
     fareZoneExtras,
   }
+}
+
+function withDayOffset(time: string, offset?: string) {
+  const parts = time.split(':')
+  parts[0] = String(Number(parts[0]) + Number(offset ?? 0) * 24).padStart(2, '0')
+  return parts.length === 2 ? parts.join(':') + ':00' : parts.join(':')
 }

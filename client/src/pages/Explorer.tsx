@@ -24,7 +24,7 @@ const STOP_TYPE_LABELS: Record<number, string> = {
   0: 'Arrêt (stop_point)',
   1: 'Zone d’arrêts (stop_area)',
   2: 'Entrée / sortie',
-  3: 'POI',
+  3: 'Nœud de circulation',
   4: 'Zone d’embarquement',
   [-1]: 'Non renseigné',
 }
@@ -565,7 +565,7 @@ export default function Explorer() {
                     const stopId = String(s.stopId)
                     const classification =
                       typeof s.classification === 'string' ? s.classification : null
-                    const isPoi = Boolean(s.isPoi) || Number(s.locationType) === 3
+                    const isPoi = Boolean(s.isPoi)
                     return (
                       <button
                         key={stopId}

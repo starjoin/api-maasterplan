@@ -1,158 +1,86 @@
 import { fork, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { DataSource } from './config.js'
-import { getSourceConfig } from './config.js'
-import { withSourcePrisma } from './db.js'
-import {
-  isImportRunning,
-  setImportRunning,
-  setDownloadProgress,
-  type DownloadProgress,
-} from './import-state.js'
+import { randomUUID } from 'node:crypto'
+import { config, type DataSource } from './config.js'
+import { generationRoot, publishGeneration, withSourcePrisma, pruneGenerations, servingUrl } from './db.js'
+import { isImportRunning, setImportRunning, setDownloadProgress, type DownloadProgress } from './import-state.js'
 
-function workerScript(): string {
-  return path.resolve(process.cwd(), 'dist', 'import-worker.js')
-}
-
-const WORKER_STALL_MS = 180_000
-
-/**
- * Lance l’import dans un process enfant (surtout NeTEx).
- * Le serveur HTTP parent reste responsive.
- */
-export async function runImportInWorker(
-  source: DataSource,
-  triggeredBy: 'manual' | 'scheduler',
-  force: boolean,
-): Promise<string> {
-  if (isImportRunning()) {
-    throw new Error('Un import est déjà en cours')
-  }
-
-  const script = workerScript()
-  if (!fs.existsSync(script)) {
-    throw new Error(`Worker introuvable: ${script} (npm run build requis)`)
-  }
-
+let child: ChildProcess | undefined
+export function stopImportWorker() { child?.kill('SIGTERM') }
+export async function runImportInWorker(source: DataSource, triggeredBy: 'manual' | 'scheduler', force: boolean, localDir?: string): Promise<string> {
+  if (isImportRunning()) throw new Error('Un import est déjà en cours')
   setImportRunning(true)
-  // Pas de faux "downloading" : on attend le 1er message worker
-  setDownloadProgress({ phase: 'idle', percent: null })
-
-  const src = getSourceConfig(source)
-  let lastBeat = Date.now()
-  let child: ChildProcess | null = null
-
-  return new Promise<string>((resolve, reject) => {
-    child = fork(script, [source, triggeredBy, String(force)], {
-      // Heap dédié à l’import (stop_times GTFS / XML NeTEx)
-      execArgv: ['--max-old-space-size=4096'],
-      env: {
-        ...process.env,
-        DATABASE_URL: src.databaseUrl,
-        IMPORT_WORKER: '1',
-        IMPORT_SKIP_MIGRATE: '1',
-        NODE_OPTIONS: '',
-      },
-      stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
-    })
-
-    let settled = false
-    let jobId: string | null = null
-
-    const watchdog = setInterval(() => {
-      if (settled) return
-      if (Date.now() - lastBeat > WORKER_STALL_MS) {
-        console.error(`[import-runner] Worker ${source} sans activité > ${WORKER_STALL_MS / 1000}s — kill`)
-        child?.kill('SIGTERM')
-        finish(new Error(`Import ${src.label} bloqué (aucune activité ${WORKER_STALL_MS / 1000}s)`))
-      }
-    }, 15_000)
-
-    const finish = (err?: Error) => {
-      if (settled) return
-      settled = true
-      clearInterval(watchdog)
-      setImportRunning(false)
-      setDownloadProgress({ phase: 'idle', percent: null })
-      if (err) reject(err)
-      else resolve(jobId ?? 'unknown')
-    }
-
-    child.on('spawn', () => {
-      lastBeat = Date.now()
-      console.log(`[import-runner] Worker ${source} démarré pid=${child?.pid}`)
-      setDownloadProgress({ phase: 'downloading', percent: 0 })
-    })
-
-    child.on('message', (msg: unknown) => {
-      lastBeat = Date.now()
-      if (!msg || typeof msg !== 'object') return
-      const m = msg as {
-        type?: string
-        jobId?: string
-        message?: string
-        progress?: DownloadProgress
-      }
-      if (m.type === 'heartbeat') return
-      if (m.type === 'progress' && m.progress) {
-        setDownloadProgress(m.progress)
-      }
-      if (m.type === 'done' && m.jobId) {
-        jobId = m.jobId
-      }
-      if (m.type === 'error' && m.message) {
-        finish(new Error(m.message))
-      }
-    })
-
-    child.on('error', (err) => {
-      finish(err)
-    })
-
-    child.on('exit', (code, signal) => {
-      if (settled) return
-      if (code === 0) {
-        finish()
-        return
-      }
-      const reason = signal
-        ? `tué par signal ${signal} (souvent OOM / mémoire insuffisante)`
-        : `code ${code}`
-      void (async () => {
-        try {
-          await withSourcePrisma(source, async (client) => {
-            await client.importJob.updateMany({
-              where: {
-                source,
-                status: { in: ['PENDING', 'DOWNLOADING', 'PARSING', 'IMPORTING'] },
-              },
-              data: {
-                status: 'FAILED',
-                completedAt: new Date(),
-                errorMessage: `Process import interrompu (${reason})`,
-              },
-            })
-          })
-        } catch {
-          /* ignore */
+  let generationDir: string | undefined
+  let jobId: string | undefined
+  let published = false
+  try {
+    const job = await withSourcePrisma(source, client => client.importJob.create({ data: { source, triggeredBy, status: 'PENDING', startedAt: new Date() } }))
+    jobId = job.id
+    await pruneGenerations(source)
+    generationDir = path.join(generationRoot(source), randomUUID())
+    fs.mkdirSync(generationDir, { recursive: true })
+    const disk = await fs.promises.statfs(generationDir)
+    if (disk.bavail * disk.bsize < 256 * 1024 ** 2) throw new Error('Moins de 256 Mo de disque libre ; import refusé')
+    const databaseUrl = `file:${path.join(generationDir, 'dataset.db')}`
+    const meta = await withSourcePrisma(source, client => client.datasetMeta.findUnique({ where: { id: source } }))
+    const development = !__filename.endsWith('.js')
+    const script = path.resolve(development ? 'src/import-worker.ts' : 'dist/import-worker.js')
+    await new Promise<void>((resolve, reject) => {
+      let failure: Error | undefined
+      let lastBeat = Date.now()
+      const started = Date.now()
+      const terminate = (message: string) => { failure ??= new Error(message); child?.kill('SIGKILL') }
+      child = fork(script, [source, triggeredBy, String(force), localDir ?? ''], {
+        execArgv: [`--max-old-space-size=${config.IMPORT_HEAP_MB}`, ...(development ? ['--import', 'tsx'] : [])],
+        env: { ...process.env, IMPORT_DATABASE_URL: databaseUrl, IMPORT_WORKER: '1', IMPORT_JOB_ID: job.id,
+          IMPORT_PREVIOUS_META: JSON.stringify(meta), NODE_OPTIONS: '', UV_THREADPOOL_SIZE: '1' },
+        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      })
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastBeat > 180_000) terminate('Worker sans activité depuis 180 secondes')
+        if (Date.now() - started > config.IMPORT_MAX_MINUTES * 60_000) terminate('Durée maximale d’import atteinte')
+        // Linux RSS includes native allocations and buffers, unlike the V8 heap limit.
+        if (process.platform === 'linux' && child?.pid) {
+          try {
+            const status = fs.readFileSync(`/proc/${child.pid}/status`, 'utf8')
+            const kb = Number(status.match(/VmRSS:\s+(\d+)/)?.[1] ?? 0)
+            if (kb > config.IMPORT_RSS_MB * 1024) terminate('Budget mémoire de l’import dépassé ; ancienne version conservée')
+          } catch { /* process exiting */ }
         }
-        finish(new Error(`Import ${src.label} interrompu (${reason})`))
-      })()
+      }, 1000)
+      child.on('message', (message: { type?: string; message?: string; progress?: DownloadProgress; rss?: number }) => {
+        lastBeat = Date.now()
+        if (message.type === 'progress' && message.progress) setDownloadProgress(message.progress)
+        if (message.type === 'error') failure = new Error(message.message ?? 'Échec import')
+        if (message.rss && message.rss > config.IMPORT_RSS_MB * 1024 ** 2) terminate('Budget mémoire de l’import dépassé')
+      })
+      child.once('error', error => { clearInterval(watchdog); reject(error) })
+      child.once('exit', (code, signal) => {
+        clearInterval(watchdog)
+        child = undefined
+        if (failure || code !== 0) reject(failure ?? new Error(`Worker interrompu (${signal ?? code}) ; ancienne version conservée`))
+        else resolve()
+      })
     })
-  })
-}
-
-/**
- * Worker process : GTFS + NeTEx en prod (heap 3 Go).
- * Le process HTTP reste à 512 Mo et ne crash plus sur OOM import.
- */
-export function shouldUseImportWorker(source: DataSource = 'gtfs'): boolean {
-  if (process.env.IMPORT_WORKER === '1') return false
-  if (process.env.IMPORT_USE_WORKER === 'false') return false
-  if (process.env.IMPORT_USE_WORKER === 'true' || process.env.IMPORT_USE_WORKER === 'always') {
-    return true
+    const result = await withSourcePrisma(source, client => client.importJob.findUniqueOrThrow({ where: { id: job.id } }))
+    if (result.status !== 'SKIPPED') {
+      if (result.status !== 'VALIDATING') throw new Error('Le worker n’a pas validé le nouvel import')
+      await publishGeneration(source, databaseUrl, job.id)
+      published = true
+      await withSourcePrisma(source, client => client.importJob.update({ where: { id: job.id }, data: { status: 'COMPLETED', completedAt: new Date() } }))
+    }
+    return job.id
+  } catch (error) {
+    if (jobId && !published) await withSourcePrisma(source, client => client.importJob.update({ where: { id: jobId }, data: {
+      status: 'FAILED', completedAt: new Date(), errorMessage: error instanceof Error ? error.message : String(error),
+    } })).catch(console.error)
+    throw error
+  } finally {
+    if (generationDir && !published && servingUrl(source) !== `file:${path.join(generationDir, 'dataset.db')}`) await fs.promises.rm(generationDir, { recursive: true, force: true }).catch(console.error)
+    if (jobId) await fs.promises.rm(path.join(config.TMP_DIR, jobId), { recursive: true, force: true }).catch(console.error)
+    setImportRunning(false)
+    setDownloadProgress({ phase: 'idle', percent: null })
   }
-  // Prod : toujours isoler les imports
-  return process.env.NODE_ENV === 'production'
 }
+export function shouldUseImportWorker(_source: DataSource = 'gtfs') { return process.env.IMPORT_WORKER !== '1' }

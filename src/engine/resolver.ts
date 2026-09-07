@@ -33,15 +33,14 @@ export async function resolveEndpoint(
   let rows: AnyRecord[]
 
   if (schema.multiple) {
-    const limit = queryParams.limit ? Math.min(parseInt(String(queryParams.limit), 10), 500) : 100
-    const offset = queryParams.offset ? parseInt(String(queryParams.offset), 10) : 0
+    const limit = queryParams.limit ? Math.max(1, Math.min(parseInt(String(queryParams.limit), 10) || 100, 500)) : 100
+    const offset = queryParams.offset ? Math.max(0, parseInt(String(queryParams.offset), 10) || 0) : 0
 
     const findManyArgs: AnyRecord = { where, orderBy }
     if (select) findManyArgs.select = select
-    if (schema.paginate) {
-      findManyArgs.take = limit
-      findManyArgs.skip = offset
-    }
+    // Every collection is bounded, including older Designer schemas without pagination.
+    findManyArgs.take = limit
+    findManyArgs.skip = offset
 
     rows = (await (delegate.findMany as Function)(findManyArgs)) as AnyRecord[]
   } else {
@@ -84,8 +83,8 @@ export async function resolveEndpoint(
 
   if (schema.paginate) {
     const total = (await (delegate.count as Function)({ where })) as number
-    const limit = queryParams.limit ? Math.min(parseInt(String(queryParams.limit), 10), 500) : 100
-    const offset = queryParams.offset ? parseInt(String(queryParams.offset), 10) : 0
+    const limit = queryParams.limit ? Math.max(1, Math.min(parseInt(String(queryParams.limit), 10) || 100, 500)) : 100
+    const offset = queryParams.offset ? Math.max(0, parseInt(String(queryParams.offset), 10) || 0) : 0
     return {
       data: mapped,
       pagination: { total, limit, offset, hasMore: offset + limit < total },

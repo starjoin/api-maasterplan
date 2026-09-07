@@ -1,4 +1,4 @@
-import AdmZip from 'adm-zip'
+import { extractZip } from '../archive.js'
 import fs from 'node:fs'
 import https from 'node:https'
 import http from 'node:http'
@@ -140,8 +140,7 @@ export async function downloadAndExtract(
   const extractDir = path.join(tmpDir, 'extracted')
   fs.mkdirSync(extractDir, { recursive: true })
 
-  const zip = new AdmZip(zipPath)
-  zip.extractAllTo(extractDir, true)
+  await extractZip(zipPath, extractDir)
   fs.unlinkSync(zipPath)
 
   // Certains zips encapsulent un dossier racine
@@ -309,6 +308,11 @@ function downloadFile(
 
       res.on('data', (chunk: Buffer) => {
         bytesReceived += chunk.length
+        if (bytesReceived > config.IMPORT_MAX_BYTES) {
+          request.destroy(new Error('Téléchargement trop volumineux'))
+          res.destroy()
+          return
+        }
         emit()
       })
 
@@ -319,6 +323,7 @@ function downloadFile(
       })
       file.on('error', (err) => fail(err))
       res.on('error', (err) => fail(err))
+      res.on('aborted', () => fail(new Error('Téléchargement interrompu')))
     })
 
     request.on('error', (err) => fail(err))

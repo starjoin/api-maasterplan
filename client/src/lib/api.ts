@@ -19,7 +19,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export interface ImportJob {
   id: string
-  status: 'PENDING' | 'DOWNLOADING' | 'PARSING' | 'IMPORTING' | 'COMPLETED' | 'FAILED' | 'SKIPPED'
+  status: 'PENDING' | 'DOWNLOADING' | 'PARSING' | 'IMPORTING' | 'VALIDATING' | 'COMPLETED' | 'FAILED' | 'SKIPPED'
   triggeredBy: string
   startedAt?: string
   completedAt?: string
