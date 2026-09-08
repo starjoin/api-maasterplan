@@ -128,6 +128,8 @@ export async function syncNetex(
         navitiaLinesMatched: navitia.matched,
         navitiaGeometries: navitia.imported,
         navitiaLinesUnmatched: navitia.unmatched,
+        navitiaUpdatedAt: new Date().toISOString(),
+        navitiaError: null,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

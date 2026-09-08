@@ -15,7 +15,43 @@ import {
 
 let child: ChildProcess | undefined
 export function stopImportWorker() { child?.kill('SIGTERM') }
-export async function runImportInWorker(source: DataSource, triggeredBy: 'manual' | 'scheduler', force: boolean, localDir?: string): Promise<string> {
+export type ImportMode = 'full' | 'navitia'
+
+async function preserveSourceFiles(currentDatabaseUrl: string, generationDir: string) {
+  const sourceRoot = path.join(path.dirname(currentDatabaseUrl.replace(/^file:/, '')), 'sources')
+  const targetRoot = path.join(generationDir, 'sources')
+  async function linkDirectory(sourceDir: string, targetDir: string): Promise<void> {
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(sourceDir, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    if (!entries.length) return
+    await fs.promises.mkdir(targetDir, { recursive: true })
+    for (const entry of entries) {
+      const sourcePath = path.join(sourceDir, entry.name)
+      const targetPath = path.join(targetDir, entry.name)
+      if (entry.isDirectory()) await linkDirectory(sourcePath, targetPath)
+      else if (entry.isFile()) {
+        await fs.promises.link(sourcePath, targetPath).catch(async error => {
+          if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+          await fs.promises.copyFile(sourcePath, targetPath)
+        })
+      }
+    }
+  }
+  await linkDirectory(sourceRoot, targetRoot)
+}
+
+export async function runImportInWorker(
+  source: DataSource,
+  triggeredBy: 'manual' | 'scheduler',
+  force: boolean,
+  localDir?: string,
+  mode: ImportMode = 'full',
+): Promise<string> {
   if (isImportRunning()) throw new Error('Un import est déjà en cours')
   setImportRunning(true)
   let generationDir: string | undefined
@@ -24,7 +60,8 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
   try {
     const job = await withSourcePrisma(source, client => client.importJob.create({ data: { source, triggeredBy, status: 'PENDING', startedAt: new Date() } }))
     jobId = job.id
-    reportImportActivity(`Préparation de l’import ${source.toUpperCase()}`, {
+    const importLabel = mode === 'navitia' ? `des tracés Navitia · ${source.toUpperCase()}` : source.toUpperCase()
+    reportImportActivity(`Préparation de l’import ${importLabel}`, {
       phase: 'preparing',
       phasePercent: 15,
       detail: 'Nettoyage des anciennes versions temporaires',
@@ -33,7 +70,13 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
     generationDir = path.join(generationRoot(source), randomUUID())
     fs.mkdirSync(generationDir, { recursive: true })
     const disk = await fs.promises.statfs(generationDir)
-    if (disk.bavail * disk.bsize < 256 * 1024 ** 2) throw new Error('Moins de 256 Mo de disque libre ; import refusé')
+    const currentDatabaseUrl = servingUrl(source)
+    const currentDatabaseBytes = mode === 'navitia'
+      ? (await fs.promises.stat(currentDatabaseUrl.replace(/^file:/, ''))).size
+      : 0
+    if (disk.bavail * disk.bsize < currentDatabaseBytes + 256 * 1024 ** 2) {
+      throw new Error('Espace disque insuffisant pour préparer la nouvelle version ; import refusé')
+    }
     const databaseUrl = `file:${path.join(generationDir, 'dataset.db')}`
     reportImportActivity('Base temporaire créée', {
       phase: 'preparing',
@@ -41,6 +84,16 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
       detail: 'Lecture des métadonnées de la version actuellement publiée',
     })
     const meta = await withSourcePrisma(source, client => client.datasetMeta.findUnique({ where: { id: source } }))
+    if (mode === 'navitia') {
+      reportImportActivity(`Copie cohérente de la base ${source.toUpperCase()}`, {
+        phase: 'preparing',
+        phasePercent: 70,
+        detail: 'Création d’un instantané SQLite sans interrompre l’API',
+      })
+      const target = databaseUrl.replace(/^file:/, '').replaceAll("'", "''")
+      await withSourcePrisma(source, client => client.$executeRawUnsafe(`VACUUM INTO '${target}'`))
+      await preserveSourceFiles(currentDatabaseUrl, generationDir)
+    }
     const development = !__filename.endsWith('.js')
     const script = path.resolve(development ? 'src/import-worker.ts' : 'dist/import-worker.js')
     await new Promise<void>((resolve, reject) => {
@@ -48,7 +101,7 @@ export async function runImportInWorker(source: DataSource, triggeredBy: 'manual
       let lastBeat = Date.now()
       const started = Date.now()
       const terminate = (message: string) => { failure ??= new Error(message); child?.kill('SIGKILL') }
-      child = fork(script, [source, triggeredBy, String(force), localDir ?? ''], {
+      child = fork(script, [source, triggeredBy, String(force), localDir ?? '', mode], {
         execArgv: [`--max-old-space-size=${config.IMPORT_HEAP_MB}`, ...(development ? ['--import', 'tsx'] : [])],
         env: { ...process.env, IMPORT_DATABASE_URL: databaseUrl, IMPORT_WORKER: '1', IMPORT_JOB_ID: job.id,
           IMPORT_PREVIOUS_META: JSON.stringify(meta), NODE_OPTIONS: '', UV_THREADPOOL_SIZE: '1' },

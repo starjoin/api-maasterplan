@@ -1,5 +1,5 @@
-import { Cable, Clock, ExternalLink } from 'lucide-react'
-import type { ExternalIntegration } from '../lib/api'
+import { Cable, Clock, ExternalLink, Loader2, RefreshCw } from 'lucide-react'
+import type { DataSource, ExternalIntegration } from '../lib/api'
 
 const states = {
   available: { label: 'Données disponibles', color: 'bg-green-50 text-green-700' },
@@ -10,7 +10,19 @@ const states = {
   stale: { label: 'Données anciennes', color: 'bg-amber-50 text-amber-800' },
 }
 
-export default function ExternalIntegrations({ integrations }: { integrations: ExternalIntegration[] }) {
+type Props = {
+  integrations: ExternalIntegration[]
+  importRunning: boolean
+  pendingSource: DataSource | null
+  onForceNavitia: (source: DataSource) => void
+}
+
+export default function ExternalIntegrations({
+  integrations,
+  importRunning,
+  pendingSource,
+  onForceNavitia,
+}: Props) {
   return (
     <section className="mb-8" aria-labelledby="external-apis-title">
       <div className="flex items-center gap-2 mb-2">
@@ -36,6 +48,35 @@ export default function ExternalIntegrations({ integrations }: { integrations: E
               <Clock className="w-3.5 h-3.5 shrink-0 mt-0.5" />
               {integration.cadence}
             </p>
+
+            {integration.id === 'navitia' && (
+              <div className="mt-4 rounded-lg border border-blue-100 bg-blue-50/60 p-3">
+                <p className="text-xs text-blue-900 mb-3">
+                  Actualise uniquement les tracés Navitia dans une copie de la base, puis la publie après validation.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {(['gtfs', 'netex'] as const).map(source => {
+                    const pending = pendingSource === source
+                    return (
+                      <button
+                        key={source}
+                        type="button"
+                        className="btn-secondary text-xs"
+                        disabled={!integration.configured || importRunning || pendingSource !== null}
+                        onClick={() => onForceNavitia(source)}
+                        title={`Forcer l’actualisation Navitia de la base ${source === 'gtfs' ? 'GTFS' : 'NeTEx'}`}
+                      >
+                        {pending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                        Forcer tracés {source === 'gtfs' ? 'GTFS' : 'NeTEx'}
+                      </button>
+                    )
+                  })}
+                </div>
+                {!integration.configured && (
+                  <p className="text-xs text-amber-800 mt-2">Configurez NAVITIA_TOKEN pour activer ces actions.</p>
+                )}
+              </div>
+            )}
 
             <div className="mt-4 space-y-3">
               {integration.snapshots.map(snapshot => {

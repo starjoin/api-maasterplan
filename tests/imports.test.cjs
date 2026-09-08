@@ -9,7 +9,7 @@ const { execFile } = require('node:child_process')
 
 test('isolated imports, availability, fidelity, failures and persisted publication', { timeout: 120000 }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'maasterplan-test-'))
-  const navitiaGeometry = {
+  let navitiaGeometry = {
     type: 'MultiLineString',
     coordinates: [[[4.01,45.01],[4.02,45.02],[4.03,45.03]]],
   }
@@ -108,6 +108,30 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     const line = await buildNavitiaLine(await db.prisma.route.findUnique({ where: { routeId: 'r' } }))
     assert.deepEqual(line.geojson.features[0].geometry, navitiaGeometry)
     assert.equal(line.routes[0].geojson.features.length, 0)
+
+    const sourceImportDate = (await db.prisma.datasetMeta.findUnique({where:{id:'gtfs'}})).lastImport.toISOString()
+    const beforeNavitiaRefresh = JSON.parse(await fs.readFile(`${root}/gtfs.db.active.json`,'utf8'))
+    navitiaGeometry = {
+      type: 'MultiLineString',
+      coordinates: [[[4.11,45.11],[4.12,45.12],[4.13,45.13]]],
+    }
+    const navitiaTrigger = await app.inject({method:'POST',url:'/admin/navitia/trigger?source=gtfs'})
+    assert.equal(navitiaTrigger.statusCode,202)
+    assert.equal(navitiaTrigger.json().source,'gtfs')
+    let healthChecks = 0
+    while (isImportRunning()) {
+      assert.equal((await app.inject('/health')).statusCode,200)
+      healthChecks++
+      await new Promise(r=>setTimeout(r,5))
+    }
+    assert.ok(healthChecks > 0)
+    const afterNavitiaRefresh = JSON.parse(await fs.readFile(`${root}/gtfs.db.active.json`,'utf8'))
+    assert.notEqual(afterNavitiaRefresh.databaseUrl,beforeNavitiaRefresh.databaseUrl)
+    assert.equal((await db.prisma.route.findFirst()).longName,'New')
+    assert.deepEqual((await lineGeojson('r',{})).features[0].geometry,navitiaGeometry)
+    const refreshedMeta = await db.prisma.datasetMeta.findUnique({where:{id:'gtfs'}})
+    assert.equal(refreshedMeta.lastImport.toISOString(),sourceImportDate)
+    assert.ok(JSON.parse(refreshedMeta.stats).navitiaUpdatedAt)
 
     console.log('Health latency during import (fixture), max ms:', Math.round(Math.max(...latencies)))
     let comparison = (await app.inject('/admin/compare')).json()

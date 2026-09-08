@@ -199,8 +199,15 @@ export const api = {
   },
 
   import: {
-    trigger: (force = false) =>
-      request<{ message: string; source?: string }>(`/admin/import/trigger?force=${force}`, {
+    trigger: (force = false, source?: DataSource) => {
+      const query = new URLSearchParams({ force: String(force) })
+      if (source) query.set('source', source)
+      return request<{ message: string; source?: string }>(`/admin/import/trigger?${query}`, {
+        method: 'POST',
+      })
+    },
+    navitia: (source: DataSource) =>
+      request<{ message: string; source: DataSource }>(`/admin/navitia/trigger?source=${source}`, {
         method: 'POST',
       }),
     netexLocal: (path: string) =>

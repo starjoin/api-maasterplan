@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, type DownloadProgress } from '../lib/api'
+import { api, type DataSource, type DownloadProgress } from '../lib/api'
 import ExternalIntegrations from '../components/ExternalIntegrations'
 import {
   RefreshCw,
@@ -200,10 +200,22 @@ export default function Dashboard() {
   })
 
   const importMut = useMutation({
-    mutationFn: (force: boolean) => api.import.trigger(force),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['dashboard'] })
-      qc.invalidateQueries({ queryKey: ['import-status'] })
+    mutationFn: ({ force, source }: { force: boolean; source?: DataSource }) => api.import.trigger(force, source),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['dashboard'] }),
+        qc.invalidateQueries({ queryKey: ['import-status'] }),
+      ])
+    },
+  })
+
+  const navitiaMut = useMutation({
+    mutationFn: (source: DataSource) => api.import.navitia(source),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['dashboard'] }),
+        qc.invalidateQueries({ queryKey: ['import-status'] }),
+      ])
     },
   })
 
@@ -241,7 +253,7 @@ export default function Dashboard() {
           <button
             className="btn-secondary"
             disabled={data.importRunning || importMut.isPending}
-            onClick={() => importMut.mutate(false)}
+            onClick={() => importMut.mutate({ force: false })}
           >
             {data.importRunning ? (
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -253,7 +265,7 @@ export default function Dashboard() {
           <button
             className="btn-ghost border border-gray-200"
             disabled={data.importRunning || importMut.isPending}
-            onClick={() => importMut.mutate(true)}
+            onClick={() => importMut.mutate({ force: true })}
             title="Forcer le re-téléchargement même si les données n'ont pas changé"
           >
             Forcer
@@ -262,6 +274,13 @@ export default function Dashboard() {
       </div>
 
       {data.importRunning && <p className="mb-4 p-3 bg-green-50 text-green-800 rounded-lg text-sm">La version publiée reste accessible pendant le nouvel import. La bascule aura lieu après validation.</p>}
+      {(importMut.isError || navitiaMut.isError) && (
+        <p className="mb-4 p-3 bg-red-50 text-red-800 rounded-lg text-sm">
+          Impossible de lancer l’import : {importMut.error instanceof Error
+            ? importMut.error.message
+            : navitiaMut.error instanceof Error ? navitiaMut.error.message : 'erreur inconnue'}
+        </p>
+      )}
       {data.importRunning && progress && progress.phase !== 'idle' && (
         <DownloadProgressBlock progress={progress} />
       )}
@@ -318,7 +337,12 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <ExternalIntegrations integrations={data.integrations ?? []} />
+      <ExternalIntegrations
+        integrations={data.integrations ?? []}
+        importRunning={data.importRunning || importMut.isPending}
+        pendingSource={navitiaMut.isPending ? navitiaMut.variables ?? null : null}
+        onForceNavitia={source => navitiaMut.mutate(source)}
+      />
 
       <div>
         <div className="card p-6">

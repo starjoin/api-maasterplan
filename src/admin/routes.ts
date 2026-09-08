@@ -179,6 +179,24 @@ export async function sourceRoutes(app: FastifyInstance) {
 }
 
 export async function importRoutes(app: FastifyInstance) {
+  app.post<{ Querystring: { source?: string } }>('/admin/navitia/trigger', async (req, reply) => {
+    if (isImportRunning()) return reply.status(409).send({ error: 'Import déjà en cours' })
+    if (!config.NAVITIA_TOKEN) {
+      return reply.status(400).send({ error: 'NAVITIA_TOKEN / REACT_APP_NAVITIA_TOKEN absent' })
+    }
+    if (!req.query.source || !isDataSource(req.query.source)) {
+      return reply.status(400).send({ error: 'source invalide (gtfs|netex)' })
+    }
+    const source = req.query.source
+    runImportInWorker(source, 'manual', true, undefined, 'navitia').catch(err => {
+      app.log.error(err, `Actualisation Navitia ${source.toUpperCase()} échouée`)
+    })
+    return reply.status(202).send({
+      message: `Actualisation des tracés Navitia lancée pour ${getSourceConfig(source).label}`,
+      source,
+    })
+  })
+
   app.post<{ Querystring: { force?: string; source?: string } }>(
     '/admin/import/trigger',
     async (req, reply) => {

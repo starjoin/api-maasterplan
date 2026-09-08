@@ -102,7 +102,9 @@ export async function getExternalIntegrations(): Promise<ExternalIntegration[]> 
         : !config.NAVITIA_TOKEN ? 'disabled' : imported === 0 ? 'partial' : 'waiting'
       return {
         label: cfg.label, status,
-        lastSuccessAt: imported != null && imported > 0 ? meta?.lastImport?.toISOString() ?? null : null,
+        lastSuccessAt: typeof stats.navitiaUpdatedAt === 'string'
+          ? stats.navitiaUpdatedAt
+          : imported != null && imported > 0 ? meta?.lastImport?.toISOString() ?? null : null,
         metrics: [
           ...(imported != null ? [{ label: 'Tracés disponibles', value: imported }] : []),
           ...(total != null ? [{ label: 'Lignes de la base', value: total }] : []),
