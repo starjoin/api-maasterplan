@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, type DownloadProgress } from '../lib/api'
+import ExternalIntegrations from '../components/ExternalIntegrations'
 import {
   RefreshCw,
   Loader2,
@@ -317,33 +318,9 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card p-6">
-          <h2 className="font-semibold mb-4">Source RFU ({data.source?.label ?? 'GTFS'})</h2>
-          <dl className="space-y-3 text-sm">
-            <div>
-              <dt className="text-gray-400">Archive</dt>
-              <dd className="font-mono text-xs break-all">{data.rfu.gtfsUrl}</dd>
-            </div>
-            <div>
-              <dt className="text-gray-400">Dernière synchro</dt>
-              <dd className="font-medium">
-                {data.data.lastImport
-                  ? new Date(data.data.lastImport).toLocaleString('fr-FR')
-                  : 'Jamais importé'}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-gray-400">Version RFU</dt>
-              <dd className="font-mono text-xs">{data.rfu.version ?? '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-gray-400">Mis à jour RFU</dt>
-              <dd className="font-mono text-xs">{data.rfu.updatedAt ?? '—'}</dd>
-            </div>
-          </dl>
-        </div>
+      <ExternalIntegrations integrations={data.integrations ?? []} />
 
+      <div>
         <div className="card p-6">
           <h2 className="font-semibold mb-4">Imports récents</h2>
           {data.jobs.recent.length === 0 ? (

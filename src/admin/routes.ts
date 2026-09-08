@@ -37,6 +37,7 @@ import {
 } from '../siri/handlers.js'
 import { refreshVehicleMonitoring } from '../siri/vehicle-monitoring.js'
 import { getStorageStatus, logStorageStatus } from '../storage.js'
+import { getExternalIntegrations } from './integrations.js'
 
 function serializeProgress(p: ReturnType<typeof getDownloadProgress>) {
   const now = Date.now()
@@ -79,11 +80,12 @@ export async function dashboardRoutes(app: FastifyInstance) {
   app.get('/admin/dashboard', async (_req, reply) => {
     const source = getActiveSource()
     const src = getSourceConfig(source)
-    const [stats, meta, recentJobs, endpointCount] = await Promise.all([
+    const [stats, meta, recentJobs, endpointCount, integrations] = await Promise.all([
       getDatasetStats(),
       prisma.datasetMeta.findUnique({ where: { id: getMetaId() } }),
       prisma.importJob.findMany({ orderBy: { createdAt: 'desc' }, take: 5 }),
       Promise.resolve(endpointRegistry.count()),
+      getExternalIntegrations(),
     ])
 
     const jobs = await prisma.importJob.groupBy({
@@ -110,6 +112,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         updatedAt: meta?.rfuUpdatedAt,
       },
       data: stats,
+      integrations,
       endpoints: { active: endpointCount },
       jobs: { recent: recentJobs, stats: jobStats },
       importRunning: isImportRunning(),

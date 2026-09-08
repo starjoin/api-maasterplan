@@ -13,6 +13,12 @@ const {
   parseNavitiaGeometry,
 } = require('../dist/navitia/line-geometries.js')
 
+test('dashboard service URLs do not reveal credentials', () => {
+  const { publicServiceUrl } = require('../dist/admin/integrations.js')
+  assert.equal(publicServiceUrl('https://user:password@example.org/lines?count=5000&token=secret#private'), 'https://example.org/lines?count=5000')
+  assert.equal(publicServiceUrl('javascript:alert(1)'), '')
+})
+
 test('validates, matches and exposes Navitia line geometries', () => {
   const geometry = {
     type: 'MultiLineString',

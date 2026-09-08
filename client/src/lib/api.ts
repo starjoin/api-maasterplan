@@ -146,6 +146,23 @@ export interface DownloadProgress {
   etaLabel: string | null
 }
 
+export type ExternalIntegration = {
+  id: string
+  name: string
+  description: string
+  configured: boolean
+  cadence: string
+  scope: string
+  urls: Array<{ label: string; url: string }>
+  snapshots: Array<{
+    label: string
+    status: 'available' | 'partial' | 'waiting' | 'disabled' | 'error' | 'stale'
+    lastSuccessAt: string | null
+    metrics: Array<{ label: string; value: number }>
+    note: string | null
+  }>
+}
+
 export const api = {
   source: {
     get: () =>
@@ -164,6 +181,7 @@ export const api = {
         rfu: { gtfsUrl: string; infoUrl: string; version?: string; updatedAt?: string }
         data: { routes: number; stops: number; trips: number; agencies: number; lastImport?: string }
         endpoints: { active: number }
+        integrations: ExternalIntegration[]
         jobs: { recent: ImportJob[]; stats: Record<string, number> }
         importRunning: boolean
         downloadProgress?: DownloadProgress

@@ -177,6 +177,7 @@ export async function syncGtfs(
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
+        Object.assign(stats, { navitiaError: message })
         await appendLog(job.id, `Tracés Navitia indisponibles : ${message}; shapes GTFS conservés`)
         reportImportActivity('Échec des tracés Navitia, shapes GTFS conservés', {
           phase: 'importing',

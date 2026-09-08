@@ -131,6 +131,7 @@ export async function syncNetex(
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      Object.assign(stats, { navitiaError: message })
       await appendLog(job.id, `Tracés Navitia indisponibles : ${message}; données NeTEx conservées`)
       reportImportActivity('Échec des tracés Navitia, données NeTEx conservées', {
         phase: 'importing',

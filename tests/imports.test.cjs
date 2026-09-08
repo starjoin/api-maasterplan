@@ -14,7 +14,17 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     coordinates: [[[4.01,45.01],[4.02,45.02],[4.03,45.03]]],
   }
   const navitiaRequests = []
+  let siriFails = false
   const navitiaServer = http.createServer((req, res) => {
+    if (req.url === '/siri') {
+      res.setHeader('content-type', 'application/json')
+      res.statusCode = siriFails ? 503 : 200
+      res.end(JSON.stringify({ Siri: { ServiceDelivery: { VehicleMonitoringDelivery: [{ VehicleActivity: [{
+        VehicleMonitoringRef: { value: 'ActIV:Vehicle:Bus:123:LOC' },
+        MonitoredVehicleJourney: { LineRef: { value: 'ActIV:Line::001:SYTRAL' } },
+      }] }] } } }))
+      return
+    }
     navitiaRequests.push(req.headers.authorization)
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ lines: [
@@ -26,6 +36,7 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
   const navitiaPort = navitiaServer.address().port
   Object.assign(process.env, { DATABASE_URL: `file:${root}/gtfs.db`, DATABASE_URL_GTFS: `file:${root}/gtfs.db`, DATABASE_URL_NETEX: `file:${root}/netex.db`,
     RFU_API_TOKEN: 'fixture', NAVITIA_TOKEN: 'fixture-navitia', NAVITIA_LINES_URL: `http://127.0.0.1:${navitiaPort}/lines`,
+    SIRI_VM_URL: `http://127.0.0.1:${navitiaPort}/siri`,
     NODE_ENV: 'test', AUTO_IMPORT_ON_START: 'false', SIRI_VM_ENABLED: 'false', TMP_DIR: `${root}/tmp`, IMPORT_HEAP_MB: '256' })
   const db = require('../dist/db.js')
   const { runImportInWorker, stopImportWorker } = require('../dist/import-runner.js')
@@ -184,6 +195,33 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     assert.equal(netexGeojson.features[0].properties.geometry_source,'navitia')
     assert.ok(navitiaRequests.length >= 3)
     assert.ok(navitiaRequests.every(value => value === `Basic ${Buffer.from('fixture-navitia:').toString('base64')}`))
+
+    // Le catalogue lit les deux versions publiées sans solliciter les fournisseurs.
+    const requestsBeforeDashboard = navitiaRequests.length
+    const dashboard = (await app.inject('/admin/dashboard')).json()
+    assert.deepEqual(dashboard.integrations.map(entry => entry.id), ['rfu-gtfs','rfu-netex','navitia','siri-vm'])
+    const navitia = dashboard.integrations.find(entry => entry.id === 'navitia')
+    assert.equal(navitia.configured, true)
+    assert.deepEqual(navitia.snapshots.map(snapshot => snapshot.status), ['available','available'])
+    assert.ok(navitia.snapshots.every(snapshot => snapshot.metrics.find(metric => metric.label === 'Tracés disponibles').value === 1))
+    assert.equal(dashboard.integrations.find(entry => entry.id === 'siri-vm').snapshots[0].status, 'disabled')
+    assert.equal(navitiaRequests.length, requestsBeforeDashboard)
+    assert.ok(!JSON.stringify(dashboard.integrations).includes('fixture-navitia'))
+
+    const { config } = require('../dist/config.js')
+    const { refreshVehicleMonitoring } = require('../dist/siri/vehicle-monitoring.js')
+    config.SIRI_VM_ENABLED = true
+    await refreshVehicleMonitoring()
+    const siriGood = (await app.inject('/admin/dashboard')).json().integrations.find(entry => entry.id === 'siri-vm').snapshots[0]
+    assert.equal(siriGood.status, 'available')
+    assert.equal(siriGood.metrics.find(metric => metric.label === 'Véhicules en cache').value, 1)
+    siriFails = true
+    await refreshVehicleMonitoring()
+    const siriBad = (await app.inject('/admin/dashboard')).json().integrations.find(entry => entry.id === 'siri-vm').snapshots[0]
+    assert.equal(siriBad.status, 'error')
+    assert.equal(siriBad.lastSuccessAt, siriGood.lastSuccessAt)
+    assert.match(siriBad.note, /503/)
+    config.SIRI_VM_ENABLED = false
     const published = JSON.parse(await fs.readFile(`${root}/netex.db.active.json`,'utf8'))
     await db.prisma.importJob.update({where:{id:published.jobId},data:{status:'VALIDATING'}})
     await db.recoverImports('netex')
