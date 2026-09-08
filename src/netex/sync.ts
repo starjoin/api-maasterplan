@@ -1,9 +1,10 @@
 import { runImportInWorker } from '../import-runner.js'
 import { prisma, getActiveSource, getMetaId } from '../db.js'
-import { getSourceConfig } from '../config.js'
+import { config, getSourceConfig } from '../config.js'
 import { cleanupTmp, downloadAndExtract, fetchRfuInfo, fetchZipMetadata } from './downloader.js'
 import { isImportRunning, reportImportActivity, setImportRunning, setDownloadProgress } from '../import-state.js'
 import { importNetexExtractDir } from './import-pipeline.js'
+import { importNavitiaLineGeometries } from '../navitia/line-geometries.js'
 
 function extractRfuTimestamp(info: Record<string, unknown>): string | null {
   const candidates = [
@@ -77,7 +78,16 @@ export async function syncNetex(
       rfuVersion = rfuInfo?.version ? String(rfuInfo.version) : zipMeta?.etag ?? null
 
       const meta = await prisma.datasetMeta.findUnique({ where: { id: metaId } })
-      if (!force && meta?.stats && JSON.parse(meta.stats).sourceFiles && meta?.rfuUpdatedAt && rfuUpdatedAt && meta.rfuUpdatedAt === rfuUpdatedAt) {
+      let previousStats: Record<string, unknown> = {}
+      try {
+        if (meta?.stats) previousStats = JSON.parse(meta.stats) as Record<string, unknown>
+      } catch {
+        previousStats = {}
+      }
+      const hasNavitiaGeometry = Number(previousStats.navitiaGeometries ?? 0) > 0
+      const canReusePublishedVersion = Boolean(previousStats.sourceFiles)
+        && (!config.NAVITIA_TOKEN || hasNavitiaGeometry)
+      if (!force && canReusePublishedVersion && meta?.rfuUpdatedAt && rfuUpdatedAt && meta.rfuUpdatedAt === rfuUpdatedAt) {
         await appendLog(job.id, 'Données NeTEx inchangées — import ignoré')
         await prisma.importJob.update({
           where: { id: job.id },
@@ -110,6 +120,24 @@ export async function syncNetex(
     await appendLog(job.id, 'Parsing + import NeTEx incrémental (fichier par fichier)…')
 
     const stats = await importNetexExtractDir(extractDir, (msg) => appendLog(job.id, msg))
+
+    try {
+      const navitia = await importNavitiaLineGeometries((msg) => appendLog(job.id, msg))
+      Object.assign(stats, {
+        navitiaLinesFetched: navitia.fetched,
+        navitiaLinesMatched: navitia.matched,
+        navitiaGeometries: navitia.imported,
+        navitiaLinesUnmatched: navitia.unmatched,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await appendLog(job.id, `Tracés Navitia indisponibles : ${message}; données NeTEx conservées`)
+      reportImportActivity('Échec des tracés Navitia, données NeTEx conservées', {
+        phase: 'importing',
+        detail: message,
+        currentItem: null,
+      })
+    }
 
     await prisma.datasetMeta.upsert({
       where: { id: metaId },

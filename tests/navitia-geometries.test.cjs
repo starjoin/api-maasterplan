@@ -3,6 +3,8 @@ const assert = require('node:assert/strict')
 
 process.env.RFU_API_TOKEN = 'fixture'
 process.env.NODE_ENV = 'test'
+process.env.NAVITIA_TOKEN = ''
+process.env.REACT_APP_NAVITIA_TOKEN = ''
 
 const {
   geometryFeatureCollection,

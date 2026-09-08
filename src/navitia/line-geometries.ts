@@ -1,4 +1,4 @@
-import { prisma } from '../db.js'
+import { getActiveSource, prisma } from '../db.js'
 import { config } from '../config.js'
 import { reportImportActivity, setDownloadProgress } from '../import-state.js'
 
@@ -134,15 +134,16 @@ function mergeExtras(raw: string | null, navitia: Record<string, unknown>) {
 }
 
 /**
- * Enrichit la projection GTFS avec les géométries de ligne Navitia.
- * Les shapes GTFS et les fichiers originaux restent conservés comme repli/audit.
+ * Enrichit la projection transport active avec les géométries de ligne Navitia.
+ * Les données de la source et les fichiers originaux restent conservés comme repli/audit.
  */
 export async function importNavitiaLineGeometries(log: (message: string) => void | Promise<void>) {
+  const sourceLabel = getActiveSource() === 'netex' ? 'NeTEx' : 'GTFS'
   if (!config.NAVITIA_TOKEN) {
     await log('Tracés Navitia ignorés : NAVITIA_TOKEN / REACT_APP_NAVITIA_TOKEN absent')
-    reportImportActivity('Tracés Navitia non configurés, conservation des shapes GTFS', {
+    reportImportActivity(`Tracés Navitia non configurés, données ${sourceLabel} conservées`, {
       phase: 'importing',
-      detail: 'Ajoutez NAVITIA_TOKEN dans les variables runtime pour utiliser les GeoJSON Navitia',
+      detail: `Ajoutez NAVITIA_TOKEN dans les variables runtime pour enrichir les lignes ${sourceLabel}`,
     })
     return { fetched: 0, matched: 0, imported: 0, unmatched: 0 }
   }
@@ -200,7 +201,7 @@ export async function importNavitiaLineGeometries(log: (message: string) => void
     })
   }
 
-  const message = `Tracés Navitia : ${imported}/${routes.length} lignes enrichies, ${unmatched} sans correspondance`
+  const message = `Tracés Navitia pour ${sourceLabel} : ${imported}/${routes.length} lignes enrichies, ${unmatched} sans correspondance`
   await log(message)
   reportImportActivity(message, {
     phase: 'importing',

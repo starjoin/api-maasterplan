@@ -3,13 +3,30 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
+const http = require('node:http')
 const { promisify } = require('node:util')
 const { execFile } = require('node:child_process')
 
 test('isolated imports, availability, fidelity, failures and persisted publication', { timeout: 120000 }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'maasterplan-test-'))
+  const navitiaGeometry = {
+    type: 'MultiLineString',
+    coordinates: [[[4.01,45.01],[4.02,45.02],[4.03,45.03]]],
+  }
+  const navitiaRequests = []
+  const navitiaServer = http.createServer((req, res) => {
+    navitiaRequests.push(req.headers.authorization)
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ lines: [
+      { id: 'line:gtfs-fixture', code: '01', name: 'Fixture GTFS', geojson: navitiaGeometry },
+      { id: 'line:netex-fixture', code: '001', name: 'Fixture NeTEx', geojson: navitiaGeometry },
+    ] }))
+  })
+  await new Promise(resolve => navitiaServer.listen(0, '127.0.0.1', resolve))
+  const navitiaPort = navitiaServer.address().port
   Object.assign(process.env, { DATABASE_URL: `file:${root}/gtfs.db`, DATABASE_URL_GTFS: `file:${root}/gtfs.db`, DATABASE_URL_NETEX: `file:${root}/netex.db`,
-    RFU_API_TOKEN: 'fixture', NODE_ENV: 'test', AUTO_IMPORT_ON_START: 'false', SIRI_VM_ENABLED: 'false', TMP_DIR: `${root}/tmp`, IMPORT_HEAP_MB: '256' })
+    RFU_API_TOKEN: 'fixture', NAVITIA_TOKEN: 'fixture-navitia', NAVITIA_LINES_URL: `http://127.0.0.1:${navitiaPort}/lines`,
+    NODE_ENV: 'test', AUTO_IMPORT_ON_START: 'false', SIRI_VM_ENABLED: 'false', TMP_DIR: `${root}/tmp`, IMPORT_HEAP_MB: '256' })
   const db = require('../dist/db.js')
   const { runImportInWorker, stopImportWorker } = require('../dist/import-runner.js')
   const { buildServer } = require('../dist/server.js')
@@ -72,14 +89,6 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     assert.equal(await db.prisma.apiEndpoint.count(),1)
     assert.equal(await db.prisma.importJob.count(),jobCount+1)
 
-    const navitiaGeometry = {
-      type: 'MultiLineString',
-      coordinates: [[[4.01,45.01],[4.02,45.02],[4.03,45.03]]],
-    }
-    await db.prisma.route.update({
-      where: { routeId: 'r' },
-      data: { extras: JSON.stringify({ navitia: { line_id: 'line:fixture', geojson: navitiaGeometry } }) },
-    })
     const { lineGeojson } = require('../dist/sae/handlers.js')
     const geojson = await lineGeojson('r', {})
     assert.deepEqual(geojson.features[0].geometry, navitiaGeometry)
@@ -153,7 +162,9 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     assert.equal(db.getActiveSource(),'gtfs')
     await db.withSourcePrisma('netex', async c=>{
       assert.equal(await c.stop.count({where:{isPoi:true}}),1)
-      assert.equal((await c.route.findFirst()).shortName,'001')
+      const netexRoute = await c.route.findFirst()
+      assert.equal(netexRoute.shortName,'001')
+      assert.deepEqual(JSON.parse(netexRoute.extras).navitia.geojson,navitiaGeometry)
       assert.equal((await c.stopTime.findFirst()).departureTime,'25:05:00')
       assert.equal((await c.calendarDate.findFirst()).date,'20260907')
       assert.equal(await c.calendar.count(),0)
@@ -168,6 +179,11 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     assert.equal(switched.statusCode,200)
     assert.equal(switched.json().active,'netex')
     assert.equal((await app.inject('/admin/explore/stops?poi_only=true')).json().total,1)
+    const netexGeojson = (await app.inject('/api/v1/lines/line/geojson')).json()
+    assert.deepEqual(netexGeojson.features[0].geometry,navitiaGeometry)
+    assert.equal(netexGeojson.features[0].properties.geometry_source,'navitia')
+    assert.ok(navitiaRequests.length >= 3)
+    assert.ok(navitiaRequests.every(value => value === `Basic ${Buffer.from('fixture-navitia:').toString('base64')}`))
     const published = JSON.parse(await fs.readFile(`${root}/netex.db.active.json`,'utf8'))
     await db.prisma.importJob.update({where:{id:published.jobId},data:{status:'VALIDATING'}})
     await db.recoverImports('netex')
@@ -190,6 +206,7 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     unblock?.()
     await app.close()
     await db.disconnectDatabases()
+    await new Promise(resolve => navitiaServer.close(resolve))
     if (process.env.KEEP_TEST_DATA) console.log('Fixture workspace:',root)
     else await fs.rm(root,{recursive:true,force:true})
   }
