@@ -10,7 +10,7 @@ Le Dockerfile ne contient pas de directive `VOLUME`. Cette omission est volontai
 
 Au démarrage, l’application lit d’abord `_prisma_migrations`. Si les migrations présentes dans l’image sont déjà appliquées, elle ne lance pas `prisma migrate deploy` : cela évite de demander un verrou SQLite exclusif pendant que l’ancien conteneur termine le rolling update. Un déploiement qui ajoute réellement une migration de schéma doit être effectué sans chevauchement des deux conteneurs, ou pendant une courte fenêtre de maintenance.
 
-Configurer `RFU_API_TOKEN` et, si nécessaire, `RFU_API_TOKEN_NETEX`. Les variables définies par Coolify priment sur `.env.local`. Ne pas copier de `.env.local` dans l’image.
+Configurer `RFU_API_TOKEN` et, si nécessaire, `RFU_API_TOKEN_NETEX`. Ajouter aussi `NAVITIA_TOKEN` dans les variables **runtime** de Coolify pour récupérer les tracés de `fr-se-sytral` ; le nom historique `REACT_APP_NAVITIA_TOKEN` reste accepté. Les variables définies par Coolify priment sur `.env.local`. Ne pas copier de `.env.local` dans l’image.
 
 | Réglage | Valeur fournie |
 | --- | --- |
@@ -47,12 +47,15 @@ Prévoir de l’espace pour **les deux dernières versions, la nouvelle base, le
 La page **GTFS ↔ NeTEx** affiche dates et URLs des publications, comptes par famille, champs renseignés, pagination des enregistrements et détails JSON complets. Tous les fichiers originaux sont téléchargeables avec leur empreinte SHA-256.
 
 - GTFS : chaque ligne de chaque fichier `.txt`/`.csv` est indexée avec tous ses champs, y compris extensions et tarifs récents ; les autres fichiers sont archivés sans transformation. Les tables transport usuelles sont projetées dans l’API.
+- À la fin d’un import GTFS, chaque ligne est rapprochée du catalogue Navitia `fr-se-sytral` par code, puis par nom normalisé lorsque le code est en doublon. Le GeoJSON Navitia est enregistré dans la nouvelle génération avant sa publication. L’API et la carte le préfèrent aux `shapes.txt`, qui restent conservés et servent de repli. Un échec Navitia n’empêche donc pas la publication du GTFS. La liste `/api/v1/lines` omet ces tracés volumineux par défaut ; `?geojson=true`, le détail d’une ligne et `/geojson` les exposent.
 - NeTEx : tous les XML sont parcourus récursivement, indépendamment de leurs noms. Chaque entité avec `id`, hors conteneurs `*Frame`, est indexée avec son contenu et ses attributs. Les métadonnées des conteneurs et éléments sans identifiant restent disponibles dans les fichiers originaux. Plusieurs occurrences d’un même identifiant restent visibles ; la projection transport utilise la dernière occurrence dans l’ordre des fichiers et déduplique les identifiants.
 - Les lignes, arrêts, quais, POI, opérateurs, zones tarifaires, courses et horaires sont projetés. Les références de courses peuvent traverser plusieurs fichiers. Les décalages de jour sont conservés (`01:05` avec un décalage de 1 jour devient `25:05`).
 - Pour les services avec un seul DayType, les affectations de jours avec date explicite, OperatingDay ou OperatingPeriod et jours de semaine sont converties en exceptions de calendrier. Les constructions NeTEx non prises en charge restent consultables à l’état brut. Le nombre de courses sans calendrier converti est indiqué ; aucune plage de dates fictive n’est créée. Les géométries, tarifs et extensions non projetés sont disponibles dans l’inventaire et les fichiers originaux.
 - Un nœud GTFS `location_type=3` n’est pas un POI. Les vrais `PointOfInterest` NeTEx disposent d’un marqueur et d’un filtre propres. Référence : [GTFS Schedule](https://gtfs.org/documentation/schedule/reference/).
 
 Les publications GTFS STANDARD et NeTEx RHONE peuvent avoir des périmètres différents. La matrice compare leur contenu observé ; elle ne prétend pas aligner automatiquement les identifiants ni déclarer les formats équivalents. Une absence ne prouve pas une limitation du format.
+
+Le sélecteur GTFS / NeTEx définit la source active globale de l’API et de l’explorateur. En choisissant NeTEx, les endpoints dynamiques lisent uniquement la génération NeTEx publiée ; aucune donnée GTFS n’est fusionnée dans leurs réponses. La base GTFS reste intacte sur le volume et redevient immédiatement disponible en revenant sur GTFS. La page **GTFS ↔ NeTEx** interroge explicitement les deux bases et reste donc utilisable quelle que soit la source active. Le changement est refusé pendant un import pour conserver une vue cohérente.
 
 Les listes sont paginées, y compris les anciens endpoints Designer sans pagination déclarée (100 résultats par défaut, maximum 500 ; `limit`/`offset` permettent de parcourir la suite). Les résumés de lignes sont calculés pendant l’import pour éviter des agrégations répétées dans le serveur HTTP. Les bases importées avant cette mise à jour utilisent temporairement l’ancien calcul : réimporter pour bénéficier de l’inventaire et des résumés.
 

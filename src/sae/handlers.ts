@@ -3,6 +3,7 @@ import { getDatasetStats } from '../gtfs/sync.js'
 import { resolveCommercialModeNavitia } from './commercial-modes.js'
 import { gtfsTypesForModeId, hexColor, modeFromGtfsType, PHYSICAL_MODES } from './modes.js'
 import { buildNavitiaLine, buildNavitiaLines } from './line-navitia.js'
+import { geometryFeatureCollection, geometryFromRouteExtras } from '../navitia/line-geometries.js'
 
 type Query = Record<string, string | undefined>
 
@@ -163,8 +164,8 @@ export async function listLines(q: Query) {
     prisma.route.count({ where }),
   ])
 
-  // Même structure Navitia que le détail. geojson=false pour alléger si besoin.
-  const includeGeojson = q.geojson !== 'false'
+  // Les tracés complets sont volumineux : la liste reste légère par défaut.
+  const includeGeojson = q.geojson === 'true'
   const lines = await buildNavitiaLines(rows, { includeGeojson })
 
   return {
@@ -263,6 +264,19 @@ export async function lineThermometer(routeId: string, q: Query) {
 export async function lineGeojson(routeId: string, q: Query) {
   const route = await prisma.route.findUnique({ where: { routeId } })
   if (!route) return null
+
+  const navitiaGeometry = geometryFromRouteExtras(route.extras)
+  if (navitiaGeometry) {
+    return {
+      ...geometryFeatureCollection(navitiaGeometry, {
+        line_id: route.routeId,
+        line_code: route.shortName,
+        line_name: route.longName,
+        color: hexColor(route.color),
+      }),
+      line: formatLine(route),
+    }
+  }
 
   const directionId = q.direction_id !== undefined ? parseInt(q.direction_id, 10) : undefined
 

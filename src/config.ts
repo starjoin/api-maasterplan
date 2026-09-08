@@ -21,6 +21,8 @@ const DEFAULT_NETEX_URL =
   'https://chouette.enroute.mobi/api/v1/datas/SYTRALMOBILITES_RFU_RHONE/netex.zip'
 const DEFAULT_NETEX_INFO_URL =
   'https://chouette.enroute.mobi/api/v1/datas/SYTRALMOBILITES_RFU_RHONE'
+const DEFAULT_NAVITIA_LINES_URL =
+  'https://api.navitia.io/v1/coverage/fr-se-sytral/lines/?count=5000'
 
 const envSchema = z.object({
   DATABASE_URL: z.string().default('file:./data/gtfs.db'),
@@ -32,6 +34,9 @@ const envSchema = z.object({
   RFU_GTFS_INFO_URL: z.string().default(DEFAULT_INFO_URL),
   RFU_NETEX_URL: z.string().default(DEFAULT_NETEX_URL),
   RFU_NETEX_INFO_URL: z.string().default(DEFAULT_NETEX_INFO_URL),
+  REACT_APP_NAVITIA_TOKEN: z.string().optional(),
+  NAVITIA_TOKEN: z.string().optional(),
+  NAVITIA_LINES_URL: z.string().url().default(DEFAULT_NAVITIA_LINES_URL),
   PORT: z.coerce.number().default(3000),
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -94,6 +99,7 @@ const netexDb = raw.DATABASE_URL_NETEX
 const netexUrl = raw.RFU_NETEX_URL
 const netexInfo = raw.RFU_NETEX_INFO_URL
 const netexToken = raw.RFU_API_TOKEN_NETEX || raw.RFU_API_TOKEN
+const navitiaToken = raw.NAVITIA_TOKEN || raw.REACT_APP_NAVITIA_TOKEN || ''
 
 export const config = {
   ...raw,
@@ -102,6 +108,7 @@ export const config = {
   RFU_NETEX_URL: netexUrl,
   RFU_NETEX_INFO_URL: netexInfo,
   RFU_API_TOKEN_NETEX: netexToken,
+  NAVITIA_TOKEN: navitiaToken,
 }
 
 export function getSourceConfig(source: DataSource): SourceRuntimeConfig {

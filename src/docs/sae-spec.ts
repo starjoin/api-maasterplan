@@ -99,12 +99,12 @@ export const SAE_OPENAPI_PATHS: Record<string, Record<string, unknown>> = {
       tags: ['SAE (natif)'],
       summary: 'Liste des lignes (format Navitia)',
       description:
-        'Liste paginée des lignes au format Navitia : `code`, `commercial_mode`, `physical_modes`, `network`, `routes` (inbound/outbound), `opening_time` / `closing_time`, `geojson`, `codes`, `properties`.\n\nFiltres : `physical_mode`, `type`, `q`, `agency_id`. Passez `geojson=false` pour alléger la réponse.\n\nAlias FR : `/api/v1/lignes`.',
+        'Liste paginée des lignes au format Navitia : `code`, `commercial_mode`, `physical_modes`, `network`, `routes` (inbound/outbound), `opening_time` / `closing_time`, `geojson`, `codes`, `properties`.\n\nFiltres : `physical_mode`, `type`, `q`, `agency_id`. Les tracés sont omis par défaut pour garder la liste légère ; passez `geojson=true` pour les inclure.\n\nAlias FR : `/api/v1/lignes`.',
       operationId: 'listLines',
       parameters: [
         { name: 'physical_mode', in: 'query', schema: { type: 'string' }, example: 'Bus', description: 'Filtrer par mode' },
         { name: 'q', in: 'query', schema: { type: 'string' }, example: 'TB11', description: 'Recherche libre' },
-        { name: 'geojson', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'true' }, description: 'Inclure les tracés GeoJSON' },
+        { name: 'geojson', in: 'query', schema: { type: 'string', enum: ['true', 'false'], default: 'false' }, description: 'Inclure les tracés GeoJSON' },
         { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 }, example: 20 },
         { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
       ],
@@ -252,7 +252,7 @@ export const SAE_OPENAPI_PATHS: Record<string, Record<string, unknown>> = {
       tags: ['SAE (natif)'],
       summary: 'Tracé GeoJSON',
       description:
-        'FeatureCollection GeoJSON des tracés (`shapes.txt`) associés à la ligne. Prêt pour Leaflet / MapLibre. Alias FR : `/api/v1/lignes/{id}/trace`.',
+        'FeatureCollection GeoJSON du tracé Navitia associé à la ligne GTFS. Les `shapes.txt` restent utilisés si Navitia est absent ou indisponible. Prêt pour Leaflet / MapLibre. Alias FR : `/api/v1/lignes/{id}/trace`.',
       operationId: 'getLineGeojson',
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string' }, example: '82' },

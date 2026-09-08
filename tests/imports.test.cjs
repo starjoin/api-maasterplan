@@ -71,6 +71,24 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     assert.equal((await db.prisma.route.findFirst()).longName,'New')
     assert.equal(await db.prisma.apiEndpoint.count(),1)
     assert.equal(await db.prisma.importJob.count(),jobCount+1)
+
+    const navitiaGeometry = {
+      type: 'MultiLineString',
+      coordinates: [[[4.01,45.01],[4.02,45.02],[4.03,45.03]]],
+    }
+    await db.prisma.route.update({
+      where: { routeId: 'r' },
+      data: { extras: JSON.stringify({ navitia: { line_id: 'line:fixture', geojson: navitiaGeometry } }) },
+    })
+    const { lineGeojson } = require('../dist/sae/handlers.js')
+    const geojson = await lineGeojson('r', {})
+    assert.deepEqual(geojson.features[0].geometry, navitiaGeometry)
+    assert.equal(geojson.features[0].properties.geometry_source, 'navitia')
+    const { buildNavitiaLine } = require('../dist/sae/line-navitia.js')
+    const line = await buildNavitiaLine(await db.prisma.route.findUnique({ where: { routeId: 'r' } }))
+    assert.deepEqual(line.geojson.features[0].geometry, navitiaGeometry)
+    assert.equal(line.routes[0].geojson.features.length, 0)
+
     console.log('Health latency during import (fixture), max ms:', Math.round(Math.max(...latencies)))
     let comparison = (await app.inject('/admin/compare')).json()
     const gtfsData = comparison.sources.find(s=>s.source==='gtfs')

@@ -63,7 +63,7 @@ export const PRESET_CATALOG: PresetMeta[] = [
   {
     id: 'lines_list',
     label: 'Lignes (liste Navitia)',
-    description: 'Liste paginée au format Navitia (modes, network, routes, geojson…)',
+    description: 'Liste paginée au format Navitia (modes, network, routes ; geojson sur demande)',
     responseKeys: ['lines', 'pagination'],
     entity: 'Route',
     multiple: true,
@@ -106,7 +106,7 @@ export const PRESET_CATALOG: PresetMeta[] = [
   {
     id: 'line_geojson',
     label: 'Tracé GeoJSON',
-    description: 'FeatureCollection des shapes de la ligne',
+    description: 'FeatureCollection Navitia, avec shapes GTFS en repli',
     responseKeys: ['type', 'features', 'line'],
     entity: 'Shape',
     multiple: false,

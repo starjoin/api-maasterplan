@@ -1,6 +1,11 @@
 import { prisma, getActiveSource } from '../db.js'
 import { resolveCommercialModeNavitia } from './commercial-modes.js'
 import { modeFromGtfsType } from './modes.js'
+import {
+  geometryFeatureCollection,
+  geometryFromRouteExtras,
+  type NavitiaGeometry,
+} from '../navitia/line-geometries.js'
 
 type RouteRow = {
   routeId: string
@@ -13,6 +18,7 @@ type RouteRow = {
   url: string | null
   agencyId: string | null
   sortOrder: number | null
+  extras: string | null
 }
 
 type BuildOptions = {
@@ -94,6 +100,7 @@ async function buildDirectionRoute(
   directionId: number | null,
   trips: Array<{ tripId: string; headsign: string | null; shapeId: string | null; directionId: number | null }>,
   includeGeojson: boolean,
+  navitiaGeometry: NavitiaGeometry | null,
 ) {
   const dirType = directionType(directionId)
   const tripIds = trips.map((t) => t.tripId)
@@ -135,7 +142,9 @@ async function buildDirectionRoute(
     features: [],
   }
 
-  if (includeGeojson && bestTrip.shapeId) {
+  // Le flux Navitia expose ici une géométrie de ligne, pas une géométrie par
+  // direction. Elle reste au niveau line.geojson pour ne pas la dupliquer.
+  if (includeGeojson && !navitiaGeometry && bestTrip.shapeId) {
     const feature = await shapeFeatureCollection(bestTrip.shapeId, {
       route_id: `route:${route.routeId}-${dirType}`,
       line_id: `line:${route.routeId}`,
@@ -190,6 +199,7 @@ async function buildDirectionRoute(
  */
 export async function buildNavitiaLine(route: RouteRow, options: BuildOptions = {}) {
   const includeGeojson = options.includeGeojson !== false
+  const navitiaGeometry = includeGeojson ? geometryFromRouteExtras(route.extras) : null
 
   const agency = route.agencyId
     ? await prisma.agency.findFirst({
@@ -255,15 +265,19 @@ export async function buildNavitiaLine(route: RouteRow, options: BuildOptions = 
 
   const routes = []
   for (const dir of dirKeys) {
-    routes.push(await buildDirectionRoute(route, dir, byDir.get(dir)!, includeGeojson))
+    routes.push(await buildDirectionRoute(route, dir, byDir.get(dir)!, includeGeojson, navitiaGeometry))
   }
 
-  // GeoJSON ligne = union des features des routes
+  // Navitia fournit ici un tracé de ligne ; les shapes GTFS restent le repli par direction.
   const lineFeatures = routes.flatMap((r) => (r.geojson?.features as unknown[]) ?? [])
-  const geojson = {
-    type: 'FeatureCollection' as const,
-    features: lineFeatures,
-  }
+  const geojson = navitiaGeometry
+    ? geometryFeatureCollection(navitiaGeometry, {
+        line_id: `line:${route.routeId}`,
+        line_code: route.shortName,
+        line_name: route.longName,
+        color: stripColor(route.color),
+      })
+    : { type: 'FeatureCollection' as const, features: lineFeatures }
 
   const networkId = agency?.agencyId ?? route.agencyId ?? 'TCL'
   const networkName = agency?.name ?? 'TCL'

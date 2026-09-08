@@ -39,6 +39,7 @@ const COUNTER_LABELS: Array<[string, string]> = [
   ['trips', 'Courses'],
   ['stopTimes', 'Horaires'],
   ['shapes', 'Points de tracé'],
+  ['navitiaGeometries', 'Tracés Navitia'],
   ['calendars', 'Calendriers'],
   ['fareZones', 'Zones tarifaires'],
   ['transfers', 'Correspondances'],
