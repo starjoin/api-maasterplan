@@ -145,7 +145,18 @@ export default function PoiDetail() {
             </div>
             <div>
               <dt className="text-xs text-gray-400">Parent</dt>
-              <dd className="font-mono text-xs">{String(stop.parentStation ?? '—')}</dd>
+              <dd className="font-mono text-xs">
+                {stop.parentStation ? (
+                  <Link
+                    to={`/explorer/stops/${encodeURIComponent(String(stop.parentStation))}`}
+                    className="text-primary-600 underline"
+                  >
+                    {String(stop.parentStation)}
+                  </Link>
+                ) : (
+                  '—'
+                )}
+              </dd>
             </div>
           </dl>
         </div>

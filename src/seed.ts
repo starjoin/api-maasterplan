@@ -1,4 +1,6 @@
+import fs from 'node:fs'
 import { PrismaClient } from '@prisma/client'
+import { PRESET_CATALOG } from './engine/presets.js'
 
 type Param = {
   name: string
@@ -28,6 +30,7 @@ function declarative(
   }> = {},
 ) {
   return {
+    source: 'active',
     entity,
     multiple: opts.multiple ?? true,
     filters: opts.filters ?? [],
@@ -48,6 +51,7 @@ function preset(
   }> = {},
 ) {
   return {
+    source: 'active',
     preset: id,
     entity,
     multiple: opts.multiple ?? true,
@@ -653,52 +657,113 @@ const SAE_PRESETS: EndpointDef[] = [
   },
 ]
 
-export async function seedDefaultEndpoints(
-  prisma: PrismaClient,
-  sourceOverride?: 'gtfs' | 'netex',
-) {
-  const { getActiveSource } = await import('./db.js')
-  const source = sourceOverride ?? getActiveSource()
-  await prisma.datasetMeta.upsert({
-    where: { id: source },
-    create: { id: source, format: source },
-    update: { format: source },
-  })
+const DEFAULTS = [...DECLARATIVE, ...SAE_PRESETS]
+const keyOf = (path: string, method: string) => `${method} ${path}`
 
-  // Nettoyer les anciennes fiches doc inactives "native" remplacées par des presets actifs
-  const all = [...DECLARATIVE, ...SAE_PRESETS]
-  let created = 0
-  let updated = 0
-
-  for (const ep of all) {
-    const { params, responseSchema, ...data } = ep
-    const existing = await prisma.apiEndpoint.findUnique({
-      where: { path_method: { path: data.path, method: data.method } },
-    })
-
-    if (!existing) {
-      await prisma.apiEndpoint.create({
-        data: {
-          ...data,
-          responseSchema: JSON.stringify(responseSchema),
-          params: { create: params },
-        },
-      })
-      created++
-    } else {
-      await prisma.apiParam.deleteMany({ where: { endpointId: existing.id } })
-      await prisma.apiEndpoint.update({
-        where: { id: existing.id },
-        data: {
-          description: data.description,
-          isActive: data.isActive,
-          responseSchema: JSON.stringify(responseSchema),
-          params: { create: params },
-        },
-      })
-      updated++
-    }
+/**
+ * Paramètres d'un endpoint preset : ceux que le handler lit (catalogue), adaptés au chemin.
+ * Un `:x` du chemin devient un paramètre de chemin obligatoire.
+ */
+export function presetParams(presetId: string, path: string): Param[] {
+  const meta = PRESET_CATALOG.find((p) => p.id === presetId)
+  const pathNames = [...path.matchAll(/:([a-zA-Z_]+)/g)].map((m) => m[1])
+  const params: Param[] = []
+  for (const input of meta?.inputs ?? []) {
+    if (pathNames.includes(input.name)) continue
+    if (input.location === 'path') continue
+    params.push({ name: input.name, type: input.type, location: 'query', required: !!input.required, description: input.description })
   }
+  for (const name of pathNames) {
+    const input = meta?.inputs.find((i) => i.name === name)
+    params.unshift({ name, type: input?.type ?? 'string', location: 'path', required: true, description: input?.description })
+  }
+  return params
+}
 
-  console.log(`[Seed] Designer = source de vérité : ${created} créés, ${updated} mis à jour`)
+function defaultParams(ep: EndpointDef): Param[] {
+  const presetId = (ep.responseSchema as { preset?: string }).preset
+  return presetId ? presetParams(presetId, ep.path) : ep.params
+}
+
+export function defaultEndpoint(path: string, method: string) {
+  const ep = DEFAULTS.find((d) => d.path === path && d.method === method)
+  return ep ? { ...ep, params: defaultParams(ep) } : null
+}
+
+/**
+ * Fusionne les endpoints autrefois stockés dans la base de contrôle NeTEx dans la
+ * configuration unique, puis les retire de l'ancienne base pour qu'une suppression
+ * dans le Designer ne soit pas annulée au démarrage suivant.
+ */
+async function mergeLegacyEndpoints(prisma: PrismaClient) {
+  const { controlClient, CONFIG_SOURCE } = await import('./db.js')
+  for (const source of ['gtfs', 'netex'] as const) {
+    if (source === CONFIG_SOURCE) continue
+    const legacy = controlClient(source)
+    if (!legacy) continue
+    const endpoints = await legacy.apiEndpoint.findMany({ include: { params: true } })
+    let merged = 0
+    for (const { id, params, createdAt: _c, updatedAt: _u, ...ep } of endpoints) {
+      const exists = await prisma.apiEndpoint.findUnique({ where: { path_method: { path: ep.path, method: ep.method } } })
+      if (!exists) {
+        await prisma.apiEndpoint.create({
+          data: { ...ep, params: { create: params.map(({ id: _id, endpointId: _e, ...p }) => p) } },
+        })
+        merged++
+      }
+      await legacy.apiEndpoint.delete({ where: { id } })
+    }
+    if (endpoints.length) console.log(`[Seed] Configuration ${source} fusionnée : ${merged} endpoint(s) repris`)
+  }
+}
+
+/**
+ * Crée les endpoints par défaut qui n'ont jamais été proposés. Le Designer reste la seule
+ * source de vérité : un endpoint existant n'est jamais modifié, et un endpoint supprimé
+ * n'est pas recréé (les clés déjà proposées sont mémorisées dans designer-seed.json).
+ */
+export async function seedDefaultEndpoints(prisma: PrismaClient) {
+  const { settingsFile, atomicJson } = await import('./db.js')
+  await mergeLegacyEndpoints(prisma)
+
+  const file = settingsFile('designer-seed.json')
+  let offered = new Set<string>()
+  let firstRun = true
+  try {
+    offered = new Set(JSON.parse(fs.readFileSync(file, 'utf8')).offered)
+    firstRun = false
+  } catch { /* premier démarrage avec ce mécanisme */ }
+
+  let created = 0
+  for (const ep of DEFAULTS) {
+    const key = keyOf(ep.path, ep.method)
+    if (offered.has(key)) continue
+    offered.add(key)
+    const exists = await prisma.apiEndpoint.findUnique({ where: { path_method: { path: ep.path, method: ep.method } } })
+    if (exists) {
+      // Installation existante : l'ancien seed écrasait les params ; on aligne une seule fois
+      // les presets sur les paramètres réellement lus par leur handler.
+      if (firstRun) await alignPresetParams(prisma, exists.id, exists.responseSchema, ep.path)
+      continue
+    }
+    const { params: _p, responseSchema, ...data } = ep
+    await prisma.apiEndpoint.create({
+      data: { ...data, responseSchema: JSON.stringify(responseSchema), params: { create: defaultParams(ep) } },
+    })
+    created++
+  }
+  atomicJson(file, { offered: [...offered].sort() })
+  console.log(`[Seed] ${created} endpoint(s) par défaut créé(s) ; configuration existante conservée`)
+}
+
+async function alignPresetParams(prisma: PrismaClient, id: string, rawSchema: string, path: string) {
+  let schema: { preset?: string; source?: string }
+  try { schema = JSON.parse(rawSchema) } catch { return }
+  const update: { responseSchema?: string } = {}
+  if (!schema.source) update.responseSchema = JSON.stringify({ source: 'active', ...schema })
+  if (schema.preset) {
+    await prisma.apiParam.deleteMany({ where: { endpointId: id } })
+    await prisma.apiParam.createMany({ data: presetParams(schema.preset, path).map((p) => ({ ...p, endpointId: id })) })
+  }
+  if (update.responseSchema) await prisma.apiEndpoint.update({ where: { id }, data: update })
 }

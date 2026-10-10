@@ -76,13 +76,24 @@ export default function ApiDesigner() {
                 <div className="flex flex-wrap gap-2 mt-1">
                   {ep.responseSchema?.preset ? (
                     <span className="badge bg-violet-100 text-violet-700">
-                      preset:{ep.responseSchema.preset}
+                      Navitia · {ep.responseSchema.preset}
                     </span>
                   ) : (
                     <span className="badge bg-sky-50 text-sky-700">
-                      déclaratif · {ep.responseSchema?.entity}
+                      tables · {ep.responseSchema?.entity}
                     </span>
                   )}
+                  <span
+                    className={`badge ${
+                      (ep.responseSchema?.source ?? 'active') === 'active'
+                        ? 'bg-gray-100 text-gray-600'
+                        : 'bg-emerald-50 text-emerald-700'
+                    }`}
+                  >
+                    {(ep.responseSchema?.source ?? 'active') === 'active'
+                      ? 'source active'
+                      : ep.responseSchema!.source!.toUpperCase()}
+                  </span>
                   {ep.params.length > 0 && (
                     <span className="text-xs text-gray-400">{ep.params.length} param(s)</span>
                   )}
@@ -127,8 +138,9 @@ export default function ApiDesigner() {
             <code className="font-mono">/api{endpoints.find((e) => e.isActive)?.path ?? endpoints[0].path}</code>
             <br />
             <span className="text-xs text-primary-600">
-              Désactiver un endpoint ici le retire de l’API. Modifier champs / responseKeys / filtres change la
-              réponse réelle. Doc : <code className="font-mono">/docs</code>
+              Désactiver un endpoint ici le retire de l’API. Paramètres, champs, filtres et relations définissent la
+              réponse réelle ; les endpoints par défaut ne sont plus jamais réécrits au démarrage. Doc :{' '}
+              <code className="font-mono">/docs</code>
             </span>
           </div>
         </div>

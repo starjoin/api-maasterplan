@@ -414,6 +414,7 @@ export function parseLineFile(filePath: string, document?: unknown): {
   const patterns = new Map<string, PatternStop[]>()
   const patternRoute = new Map<string, string>()
   const patternName = new Map<string, string>()
+  const patternDestination = new Map<string, string>()
 
   for (const tag of ['JourneyPattern', 'ServiceJourneyPattern']) {
     for (const jp of findAll(doc, tag)) {
@@ -422,6 +423,8 @@ export function parseLineFile(filePath: string, document?: unknown): {
       const routeRef = refOf(jp.RouteRef)
       if (routeRef) patternRoute.set(id, routeRef)
       if (text(jp.Name)) patternName.set(id, text(jp.Name)!)
+      const destinationRef = refOf(jp.DestinationDisplayRef)
+      if (destinationRef) patternDestination.set(id, destinationRef)
 
       const points = asArray(
         (jp.pointsInSequence as { StopPointInJourneyPattern?: unknown } | undefined)
@@ -486,6 +489,15 @@ export function parseLineFile(filePath: string, document?: unknown): {
 
   const defaultLineId = routes[0]?.route_id
 
+  // Girouette publique (DestinationDisplay/FrontText). Les noms de ServiceJourney ou de
+  // JourneyPattern sont souvent des libellés techniques (« REF~251124~311227~MT A - … »).
+  const destinationText = new Map<string, string>()
+  for (const dd of findAll(doc, 'DestinationDisplay')) {
+    const id = attr(dd, 'id')
+    const label = text(dd.FrontText) ?? text(dd.Name)
+    if (id && label) destinationText.set(id, label)
+  }
+
   // Service journeys
   for (const sj of findAll(doc, 'ServiceJourney')) {
     const tripId = attr(sj, 'id')
@@ -499,7 +511,11 @@ export function parseLineFile(filePath: string, document?: unknown): {
 
     const netexRouteId = jpRef ? patternRoute.get(jpRef) : undefined
     const direction = directionToGtfs(netexRouteId ? routeDirection.get(netexRouteId) : undefined)
-    const headsign = text(sj.Name) ?? (jpRef ? patternName.get(jpRef) : undefined)
+    const destinationRef = refOf(sj.DestinationDisplayRef) ?? (jpRef ? patternDestination.get(jpRef) : undefined)
+    const headsign =
+      (destinationRef ? destinationText.get(destinationRef) : undefined) ??
+      text(sj.Name) ??
+      (jpRef ? patternName.get(jpRef) : undefined)
 
     trips.push({
       trip_id: tripId,

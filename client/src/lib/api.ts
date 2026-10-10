@@ -37,6 +37,8 @@ export interface ApiEndpoint {
   isActive: boolean
   responseSchema: ResponseSchema
   params: ApiParam[]
+  /** Endpoint livré par défaut : sa configuration d'origine peut être restaurée */
+  isDefault?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -51,7 +53,11 @@ export interface ApiParam {
   defaultValue?: string
 }
 
+export type EndpointSource = 'active' | 'gtfs' | 'netex'
+
 export interface ResponseSchema {
+  /** Base interrogée ; `active` suit la source choisie dans le dashboard */
+  source?: EndpointSource
   entity: string
   multiple: boolean
   filters: FilterDef[]
@@ -61,8 +67,29 @@ export interface ResponseSchema {
   paginate?: boolean
   /** Preset SAE — si défini, pilote un handler nommé */
   preset?: string
-  /** Projection des clés de réponse (presets) */
+  /** Clés racines conservées (presets). Vide = toutes */
   responseKeys?: string[]
+  /** Champs conservés dans chaque élément d'une liste du preset */
+  output?: { list?: string; fields: FieldMapping[] }
+}
+
+export interface PresetInput {
+  name: string
+  type: 'string' | 'number' | 'boolean'
+  location: 'path' | 'query'
+  required?: boolean
+  description: string
+}
+
+export interface ColumnMeta {
+  name: string
+  type: 'string' | 'number' | 'boolean' | 'json'
+  paths?: string[]
+}
+
+export interface EntitiesMeta {
+  source: DataSource
+  entities: Record<string, { label: string; columns: ColumnMeta[] }>
 }
 
 export interface PresetMeta {
@@ -70,6 +97,11 @@ export interface PresetMeta {
   label: string
   description: string
   responseKeys: string[]
+  listKey?: string
+  itemFields?: string[]
+  inputs: PresetInput[]
+  data: 'transport' | 'realtime' | 'none'
+  caveats?: string
   entity: string
   multiple: boolean
   pathHint: string
@@ -79,7 +111,7 @@ export interface FilterDef {
   field: string
   source: 'path' | 'query' | 'static'
   key: string
-  operator?: 'eq' | 'contains' | 'startsWith'
+  operator?: 'eq' | 'contains' | 'startsWith' | 'in' | 'gte' | 'lte'
 }
 
 export interface FieldMapping {
@@ -90,9 +122,14 @@ export interface FieldMapping {
 export interface RelationDef {
   output: string
   entity: string
+  /** Base de l'entité liée ; absente = même base que l'endpoint */
+  source?: EndpointSource
   parentField: string
   foreignField: string
   fields: FieldMapping[]
+  multiple?: boolean
+  orderBy?: { field: string; direction: 'asc' | 'desc' }
+  limit?: number
 }
 
 export type DataSource = 'gtfs' | 'netex'
@@ -236,12 +273,23 @@ export const api = {
       request<ApiEndpoint>(`/admin/endpoints/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request<void>(`/admin/endpoints/${id}`, { method: 'DELETE' }),
     toggle: (id: string) => request<ApiEndpoint>(`/admin/endpoints/${id}/toggle`, { method: 'PATCH' }),
-    fields: () => request<Record<string, string[]>>('/admin/endpoints/meta/fields'),
+    reset: (id: string) => request<ApiEndpoint>(`/admin/endpoints/${id}/reset`, { method: 'POST' }),
+    fields: (source?: DataSource) =>
+      request<EntitiesMeta>(`/admin/endpoints/meta/fields${source ? `?source=${source}` : ''}`),
+    sources: () =>
+      request<{ sources: Array<{ id: DataSource; active: boolean; counts: Record<string, number> }> }>(
+        '/admin/endpoints/meta/sources',
+      ),
     presets: () => request<{ presets: PresetMeta[] }>('/admin/endpoints/meta/presets'),
-    preview: (schema: ResponseSchema, pathParams: Record<string, string>, queryParams: Record<string, string>) =>
+    preview: (
+      schema: ResponseSchema,
+      params: ApiParam[],
+      pathParams: Record<string, string>,
+      queryParams: Record<string, string>,
+    ) =>
       request<{ ok: boolean; result: unknown; error?: string }>('/admin/endpoints/preview', {
         method: 'POST',
-        body: JSON.stringify({ schema, pathParams, queryParams }),
+        body: JSON.stringify({ schema, params, pathParams, queryParams }),
       }),
   },
 

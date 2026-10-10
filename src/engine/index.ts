@@ -1,7 +1,10 @@
 import type { FastifyInstance } from 'fastify'
-import { prisma, getActiveSource } from '../db.js'
-import { resolveEndpoint } from './resolver.js'
+import { prisma } from '../db.js'
+import { resolveEndpoint, type DeclaredParam } from './resolver.js'
+import { ParamError } from './model.js'
 import type { ResponseSchema } from './types.js'
+
+type Route = { id: string; path: string; method: string; responseSchema: string; params: DeclaredParam[]; segments: string[] }
 
 export interface ResolvedEndpoint {
   endpoint: {
@@ -9,20 +12,20 @@ export interface ResolvedEndpoint {
     path: string
     method: string
     responseSchema: string
+    params: DeclaredParam[]
   }
   params: Record<string, string>
 }
 
 export class EndpointRegistry {
-  private bySource = new Map<string, Array<{ id: string; path: string; method: string; responseSchema: string; segments: string[] }>>()
-  private get routes() { return this.bySource.get(getActiveSource()) ?? [] }
-  private set routes(value: Array<{ id: string; path: string; method: string; responseSchema: string; segments: string[] }>) { this.bySource.set(getActiveSource(), value) }
+  // Configuration unique : la base interrogée est choisie par endpoint (schema.source).
+  private routes: Route[] = []
 
 
   async reload() {
     const endpoints = await prisma.apiEndpoint.findMany({
       where: { isActive: true },
-      select: { id: true, path: true, method: true, responseSchema: true },
+      select: { id: true, path: true, method: true, responseSchema: true, params: true },
     })
 
     // Préférer les chemins statiques aux params (:id) pour la même profondeur
@@ -93,6 +96,7 @@ export async function registerDynamicApiHandler(app: FastifyInstance) {
         schema,
         resolved.params,
         request.query as Record<string, unknown>,
+        resolved.endpoint.params,
       )
 
       if (result === null) {
@@ -101,6 +105,7 @@ export async function registerDynamicApiHandler(app: FastifyInstance) {
 
       return reply.send(result)
     } catch (err) {
+      if (err instanceof ParamError) return reply.status(400).send({ error: err.message })
       request.log.error(err)
       return reply.status(500).send({ error: 'Erreur interne' })
     }

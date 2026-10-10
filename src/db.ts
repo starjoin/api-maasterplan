@@ -21,6 +21,8 @@ export function controlUrl(source: DataSource) {
 }
 const legacySettings = path.resolve('data/app-settings.json')
 const settingsPath = fs.existsSync(legacySettings) && process.env.NODE_ENV !== 'test' ? legacySettings : path.join(path.dirname(fileUrlToPath(controlUrl('gtfs'))), 'app-settings.json')
+/** Fichier de réglage rangé à côté de app-settings.json. */
+export function settingsFile(name: string) { return path.join(path.dirname(settingsPath), name) }
 let activeSource: DataSource = 'gtfs'
 try {
   const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
@@ -116,10 +118,18 @@ const generations = new Map<DataSource, Generation>()
 const controls = new Map<DataSource, PrismaClient>()
 const retired = new Set<Generation>()
 const context = new AsyncLocalStorage<{ source: DataSource; generation: Generation }>()
-const controlModels = new Set<PropertyKey>(['importJob', 'apiEndpoint', 'apiParam'])
+const controlModels = new Set<PropertyKey>(['importJob'])
+/**
+ * La configuration du Designer est unique, quelle que soit la source : elle vit dans la
+ * base de contrôle GTFS. Chaque endpoint choisit ensuite la base qu'il interroge.
+ */
+const configModels = new Set<PropertyKey>(['apiEndpoint', 'apiParam'])
+export const CONFIG_SOURCE: DataSource = 'gtfs'
 function sourceClient(source: DataSource, generation = generations.get(source)!): PrismaClient {
   return new Proxy(generation.client, { get(target, property) {
-    const owner = controlModels.has(property) ? controls.get(source)! : target
+    const owner = configModels.has(property)
+      ? (controls.get(CONFIG_SOURCE) ?? controls.get(source)!)
+      : controlModels.has(property) ? controls.get(source)! : target
     const value = Reflect.get(owner, property)
     return typeof value === 'function' ? value.bind(owner) : value
   } })
@@ -129,6 +139,8 @@ export const prisma = new Proxy({} as PrismaClient, { get(_target, property) {
   const source = scope?.source ?? activeSource
   return Reflect.get(sourceClient(source, scope?.generation), property)
 } })
+/** Client de contrôle brut d'une source (sans routage de la configuration Designer). */
+export function controlClient(source: DataSource) { return controls.get(source) }
 export function getActiveSource() { return context.getStore()?.source ?? activeSource }
 export function getMetaId(source: DataSource = getActiveSource()) { return source }
 export async function ensureSourceDatabase(source: DataSource) {

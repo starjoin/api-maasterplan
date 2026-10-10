@@ -41,7 +41,8 @@ export async function buildServer() {
     app.setNotFoundHandler(async (req, reply) => {
       if (
         !req.url.startsWith('/admin') &&
-        !req.url.startsWith('/api') &&
+        // '/api/' et non '/api' : /api-designer est une route du client
+        !req.url.startsWith('/api/') &&
         !req.url.startsWith('/health') &&
         !req.url.startsWith('/docs') &&
         !req.url.startsWith('/openapi')

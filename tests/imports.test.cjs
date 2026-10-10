@@ -210,6 +210,9 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     assert.equal(await db.withSourcePrisma('netex', c=>c.trip.count()),1)
     comparison = (await app.inject('/admin/compare')).json()
     assert.equal(comparison.sources.find(s=>s.source==='netex').kinds.find(k=>k.kind==='Parking').count,1)
+    // Comme au démarrage (index.ts) : endpoints par défaut créés une fois, configuration unique.
+    await require('../dist/seed.js').seedDefaultEndpoints(db.prisma)
+    await require('../dist/engine/index.js').reloadEndpoints(app)
     const switched = await app.inject({method:'POST',url:'/admin/source',payload:{source:'netex'}})
     assert.equal(switched.statusCode,200)
     assert.equal(switched.json().active,'netex')
@@ -217,6 +220,21 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
     const netexGeojson = (await app.inject('/api/v1/lines/line/geojson')).json()
     assert.deepEqual(netexGeojson.features[0].geometry,navitiaGeometry)
     assert.equal(netexGeojson.features[0].properties.geometry_source,'navitia')
+
+    // Designer : seuls les paramètres déclarés sont lus, et chaque endpoint choisit sa base.
+    const routeSchema = {source:'gtfs',entity:'Route',multiple:true,paginate:false,
+      filters:[{field:'routeId',source:'query',key:'id',operator:'eq'}],fields:[{output:'code',db:'shortName'}]}
+    const preview = payload => app.inject({method:'POST',url:'/admin/endpoints/preview',payload}).then(r=>r.json())
+    assert.deepEqual((await preview({schema:routeSchema,params:[],queryParams:{id:'absent'}})).result,[{code:'01'}])
+    assert.deepEqual((await preview({schema:routeSchema,params:[{name:'id',type:'string',location:'query',required:false}],
+      queryParams:{id:'absent'}})).result,[])
+    assert.equal((await preview({schema:{...routeSchema,source:'netex'},params:[]})).result[0].code,'001')
+    const required = await app.inject('/api/v1/places')
+    assert.equal(required.statusCode,400)
+    const edited = (await app.inject('/admin/endpoints')).json().find(e=>e.path==='/v1/places')
+    await app.inject({method:'PUT',url:`/admin/endpoints/${edited.id}`,payload:{description:'modifié'}})
+    await require('../dist/seed.js').seedDefaultEndpoints(db.prisma)
+    assert.equal((await app.inject(`/admin/endpoints/${edited.id}`)).json().description,'modifié')
     assert.ok(navitiaRequests.length >= 3)
     assert.ok(navitiaRequests.every(value => value === `Basic ${Buffer.from('fixture-navitia:').toString('base64')}`))
 

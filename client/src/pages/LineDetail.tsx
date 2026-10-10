@@ -229,8 +229,13 @@ export default function LineDetail() {
               {activeDir.stop_points.map((sp, idx) => {
                 const isFirst = idx === 0
                 const isLast = idx === activeDir.stop_points.length - 1
+                const stopId = sp.stop_point.id
                 return (
-                  <li key={`${sp.order}-${sp.stop_point.id}`} className="flex gap-4 px-5 py-3">
+                  <li key={`${sp.order}-${stopId}`}>
+                    <Link
+                      to={stopId ? `/explorer/stops/${encodeURIComponent(stopId)}` : '#'}
+                      className="flex gap-4 px-5 py-3 hover:bg-gray-50 transition-colors"
+                    >
                     <div className="flex flex-col items-center w-6 flex-shrink-0">
                       <span
                         className={`w-3 h-3 rounded-full border-2 ${
@@ -251,6 +256,7 @@ export default function LineDetail() {
                       <p>Arr. {formatNavitiaTime(sp.arrival_time)}</p>
                       <p>Dep. {formatNavitiaTime(sp.departure_time)}</p>
                     </div>
+                    </Link>
                   </li>
                 )
               })}

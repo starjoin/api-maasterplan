@@ -10,7 +10,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/admin': apiOrigin,
-      '/api': apiOrigin,
+      // '/api' seul capterait aussi la route client /api-designer
+      '^/api/': apiOrigin,
       '/health': apiOrigin,
       '/docs': apiOrigin,
       '/openapi.json': apiOrigin,

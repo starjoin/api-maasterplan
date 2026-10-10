@@ -177,25 +177,36 @@ function explainEndpoint(ep: DesignerEndpoint): string {
 
   if (ep.description) parts.push(ep.description)
 
+  const source = schema.source ?? 'active'
+  parts.push(
+    source === 'active'
+      ? '**Données :** base de la source active (GTFS ou NeTEx selon le dashboard).'
+      : `**Données :** base ${source.toUpperCase()}.`,
+  )
+
   if (schema.native === 'sae' || schema.preset) {
     parts.push(
       schema.preset
-        ? `Cet endpoint est piloté par le **preset SAE** \`${schema.preset}\` depuis l’API Designer (activation, params, projection \`responseKeys\`).`
+        ? `Réponse au format Navitia produite par le preset \`${schema.preset}\`.`
         : 'Cet endpoint est servi par un preset SAE.',
     )
     if (schema.responseKeys?.length) {
-      parts.push(`**Projection :** ${schema.responseKeys.map((k) => `\`${k}\``).join(', ')}.`)
+      parts.push(`**Clés racines :** ${schema.responseKeys.map((k) => `\`${k}\``).join(', ')}.`)
+    }
+    if (schema.output?.list && schema.output.fields?.length) {
+      const mapping = schema.output.fields.map((f) => `\`${f.db}\` → \`${f.output}\``).join(', ')
+      parts.push(`**Champs de \`${schema.output.list}[]\` :** ${mapping}.`)
     }
     return parts.join('\n\n')
   }
 
   const entity = schema.entity ?? 'Route'
-  parts.push(`**Entité GTFS :** \`${entity}\` — ${ENTITY_BLURBS[entity] ?? 'Données GTFS.'}`)
+  parts.push(`**Entité :** \`${entity}\` — ${ENTITY_BLURBS[entity] ?? ''}`)
 
   if (schema.multiple) {
     parts.push(
       schema.paginate
-        ? 'Retourne une **liste paginée** (`data` + `pagination`). Utilisez `?limit=` et `?offset=`.'
+        ? 'Retourne une **liste paginée** (`data` + `pagination`).'
         : 'Retourne un **tableau** de résultats.',
     )
   } else {
@@ -302,38 +313,8 @@ export function designerEndpointToOperation(ep: DesignerEndpoint) {
     })
   }
 
-  // Pagination auto si activée
-  if (schema.paginate && !parameters.some((p) => p.name === 'limit')) {
-    parameters.push({
-      name: 'limit',
-      in: 'query',
-      required: false,
-      description: 'Nombre max de résultats (plafond 500, défaut 100).',
-      schema: { type: 'integer', default: 100, maximum: 500 },
-      example: 20,
-    })
-    parameters.push({
-      name: 'offset',
-      in: 'query',
-      required: false,
-      description: 'Décalage pour la pagination.',
-      schema: { type: 'integer', default: 0 },
-      example: 0,
-    })
-  }
+  // Seuls les paramètres déclarés sont lus par le moteur : rien d'autre n'est documenté.
 
-  // Filtres query non déclarés dans params
-  for (const f of (schema.filters ?? []) as FilterDef[]) {
-    if (f.source !== 'query') continue
-    if (parameters.some((p) => p.name === f.key)) continue
-    parameters.push({
-      name: f.key,
-      in: 'query',
-      required: false,
-      description: `Filtre sur le champ \`${f.field}\` (opérateur ${f.operator ?? 'eq'}).`,
-      schema: { type: 'string' },
-    })
-  }
 
   const example = buildResponseExample(schema)
   const responseSchema = buildJsonSchemaFromFields(schema)

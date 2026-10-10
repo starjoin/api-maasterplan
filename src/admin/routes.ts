@@ -21,7 +21,6 @@ import { getDatasetStats, isImportRunning, syncDataset } from '../gtfs/sync.js'
 import { formatBytes, formatEta, getDownloadProgress } from '../import-state.js'
 import { fetchRfuInfo, fetchZipMetadata } from '../gtfs/downloader.js'
 import { endpointRegistry, reloadEndpoints } from '../engine/index.js'
-import { seedDefaultEndpoints } from '../seed.js'
 import {
   COMMERCIAL_MODES,
   matchesCommercialKey,
@@ -167,7 +166,6 @@ export async function sourceRoutes(app: FastifyInstance) {
 
     await ensureSourceDatabase(next)
     await setActiveSource(next)
-    await seedDefaultEndpoints(prisma, next)
     await reloadEndpoints(app)
 
     return reply.send({

@@ -57,11 +57,33 @@ La page **GTFS ↔ NeTEx** affiche dates et URLs des publications, comptes par f
 
 Les publications GTFS STANDARD et NeTEx RHONE peuvent avoir des périmètres différents. La matrice compare leur contenu observé ; elle ne prétend pas aligner automatiquement les identifiants ni déclarer les formats équivalents. Une absence ne prouve pas une limitation du format.
 
-Le sélecteur GTFS / NeTEx définit la source active globale de l’API et de l’explorateur. En choisissant NeTEx, les endpoints dynamiques lisent uniquement la génération NeTEx publiée ; aucune donnée GTFS n’est fusionnée dans leurs réponses. La base GTFS reste intacte sur le volume et redevient immédiatement disponible en revenant sur GTFS. La page **GTFS ↔ NeTEx** interroge explicitement les deux bases et reste donc utilisable quelle que soit la source active. Le changement est refusé pendant un import pour conserver une vue cohérente.
+Le sélecteur GTFS / NeTEx définit la source active de l’explorateur et des endpoints Designer réglés sur « Source active ». Un endpoint peut aussi être fixé sur GTFS ou NeTEx : il lit alors toujours cette base, quel que soit le sélecteur. La base GTFS reste intacte sur le volume et redevient immédiatement disponible en revenant sur GTFS. La page **GTFS ↔ NeTEx** interroge explicitement les deux bases et reste donc utilisable quelle que soit la source active. Le changement est refusé pendant un import pour conserver une vue cohérente.
 
-Les listes sont paginées, y compris les anciens endpoints Designer sans pagination déclarée (100 résultats par défaut, maximum 500 ; `limit`/`offset` permettent de parcourir la suite). Les résumés de lignes sont calculés pendant l’import pour éviter des agrégations répétées dans le serveur HTTP. Les bases importées avant cette mise à jour utilisent temporairement l’ancien calcul : réimporter pour bénéficier de l’inventaire et des résumés.
+Les listes sont toujours bornées (100 résultats par défaut, maximum 500). `limit`/`offset` ne sont lus que s’ils sont déclarés comme paramètres de l’endpoint. Les résumés de lignes sont calculés pendant l’import pour éviter des agrégations répétées dans le serveur HTTP. Les bases importées avant cette mise à jour utilisent temporairement l’ancien calcul : réimporter pour bénéficier de l’inventaire et des résumés.
 
 Le point d’entrée d’import NeTEx local accepte seulement les dossiers dans `LOCAL_IMPORT_ROOT` (défaut `data/imports`). Les liens symboliques sont refusés.
+
+## API Designer
+
+Le Designer est la seule source de vérité de l’API publique `/api`. Sa configuration est unique et stockée dans la base de contrôle GTFS, quelle que soit la source active.
+
+- **Endpoints par défaut.** Au démarrage, seuls les endpoints livrés jamais encore proposés sont créés. Un endpoint existant n’est jamais réécrit, et un endpoint supprimé n’est pas recréé. Les clés déjà proposées sont listées dans `designer-seed.json`, à côté de `app-settings.json`. Le bouton « Configuration d’origine » restaure la version livrée d’un endpoint.
+- **Données interrogées.** Chaque endpoint choisit sa base : GTFS, NeTEx ou la source active.
+- **Paramètres.** Ils forment le contrat d’entrée de l’endpoint : un paramètre non déclaré est ignoré. Un paramètre obligatoire absent ou mal typé renvoie `400`, et la valeur par défaut s’applique quand l’appelant n’envoie rien.
+- **Requête sur tables.** On choisit l’entité, les champs (les colonnes JSON `extras` sont adressables par chemin, ex. `extras.address.town`), les filtres, le tri et les relations. Une relation peut lire l’autre base : par exemple, un arrêt GTFS récupère son adresse et sa zone tarifaire depuis NeTEx par `stopId`.
+- **Format Navitia (preset).** Un handler codé produit une réponse au format Navitia. Le Designer liste les paramètres qu’il sait lire, les clés racines conservées et les champs gardés ou renommés dans chaque élément de sa liste.
+
+Rapprochement observé le 10 octobre 2026 entre les deux publications :
+
+| Identifiant | GTFS retrouvé dans NeTEx |
+| --- | --- |
+| Lignes (`routeId`) | 796 / 796 |
+| Arrêts (`stopId`) | 13 946 / 13 946 |
+| Zones d’arrêts (`parentStation`) | 4 236 / 4 236 |
+| Opérateurs (`agencyId`) | 8 / 8 |
+| Calendriers (`serviceId`) | 2 236 / 2 533 |
+
+NeTEx ajoute 43 lignes et 3 211 arrêts, dont 1 785 POI, absents du GTFS. GTFS est la seule source de shapes. Ces correspondances sont à revérifier si l’un des producteurs change ses identifiants.
 
 ## Développement et vérification
 

@@ -32,14 +32,7 @@ async function main() {
   const port = await listenDynamic(app, config.PORT, config.HOST)
   console.log(`[Server] http://${config.HOST === '0.0.0.0' ? 'localhost' : config.HOST}:${port}`)
 
-  console.log('[Seed] Synchronisation du catalogue SAE / Designer...')
-  await seedDefaultEndpoints(prisma, getActiveSource())
-  for (const source of DATA_SOURCES) {
-    if (source === getActiveSource()) continue
-    await withSourcePrisma(source, async (client) => {
-      await seedDefaultEndpoints(client, source)
-    })
-  }
+  await seedDefaultEndpoints(prisma)
 
   for (const source of DATA_SOURCES) await recoverImports(source)
   const shutdown = async () => {
@@ -50,7 +43,7 @@ async function main() {
   process.once('SIGTERM', () => void shutdown())
   process.once('SIGINT', () => void shutdown())
 
-  for (const source of DATA_SOURCES) await withSourcePrisma(source, () => import('./engine/index.js').then(engine => engine.reloadEndpoints(app)))
+  await import('./engine/index.js').then(engine => engine.reloadEndpoints(app))
   startScheduler(app)
   startVehicleMonitoringPoller(app.log)
 
