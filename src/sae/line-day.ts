@@ -216,7 +216,11 @@ const STOP_MATCH_METERS = 80
  * Parmi les variantes de la géométrie Navitia, garde celle qui passe par le plus
  * d'arrêts donnés, rognée entre le premier et le dernier arrêt.
  */
-function navitiaGeometryForStops(parts: number[][][], stops: Array<{ lat: number; lon: number }>) {
+function navitiaGeometryForStops(
+  parts: number[][][],
+  stops: Array<{ lat: number; lon: number }>,
+  minCoverage = 0.6,
+) {
   if (stops.length < 2) return null
   let best: { coverage: number; coords: number[][]; span: number } | null = null
 
@@ -243,7 +247,7 @@ function navitiaGeometryForStops(parts: number[][][], stops: Array<{ lat: number
     }
   }
 
-  return best && best.coverage >= 0.6 ? best : null
+  return best && best.coverage >= minCoverage - 1e-9 ? best : null
 }
 
 /**
@@ -255,6 +259,8 @@ async function geometryForStops(
   navitiaParts: number[][][] | null,
   stops: Array<{ lat: number; lon: number }>,
   props: Record<string, unknown>,
+  /** Part minimale des arrêts devant être sur la variante Navitia (sinon vol d'oiseau) */
+  minCoverage = 0.6,
 ) {
   const features: LineFeature[] = []
   for (const shapeId of shapeIds.slice(0, 12)) {
@@ -264,7 +270,7 @@ async function geometryForStops(
   if (features.length) return { source: 'gtfs_shapes' as const, features }
 
   if (navitiaParts) {
-    const best = navitiaGeometryForStops(navitiaParts, stops)
+    const best = navitiaGeometryForStops(navitiaParts, stops, minCoverage)
     if (best) {
       features.push({
         type: 'Feature',
@@ -497,6 +503,8 @@ export async function tripGeometry(tripId: string) {
     navitiaPartsOf(route?.extras ?? null),
     coords,
     { trip_id: tripId, direction_id: trip.directionId },
+    // Une course déviée (arrêts hors du tracé nominal) est tracée d'arrêt en arrêt
+    1,
   )
   return {
     trip_id: tripId,
