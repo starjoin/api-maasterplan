@@ -50,30 +50,6 @@ function withoutCustomProtocols(style: StyleSpecification): StyleSpecification {
   }
 }
 
-const UNSERVED_COLOR = '#dc2626'
-
-/** Icône « croix » dessinée au canvas (le jeu de glyphes du fond n'a pas ✕) */
-function crossIcon(size = 18): ImageData {
-  const canvas = document.createElement('canvas')
-  canvas.width = canvas.height = size
-  const ctx = canvas.getContext('2d')!
-  const m = 4
-  ctx.lineCap = 'round'
-  const draw = (color: string, width: number) => {
-    ctx.strokeStyle = color
-    ctx.lineWidth = width
-    ctx.beginPath()
-    ctx.moveTo(m, m)
-    ctx.lineTo(size - m, size - m)
-    ctx.moveTo(size - m, m)
-    ctx.lineTo(m, size - m)
-    ctx.stroke()
-  }
-  draw('#ffffff', 6)
-  draw(UNSERVED_COLOR, 3)
-  return ctx.getImageData(0, 0, size, size)
-}
-
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] }
 
 function hasLineGeometry(geojson: GeoJson | null | undefined): boolean {
@@ -113,15 +89,11 @@ export default function LineMap({
   geojson,
   color,
   stops = [],
-  unservedStops = [],
   className = '',
 }: {
   geojson: GeoJson | null | undefined
   color?: string | null
-  /** Arrêts desservis à la date affichée */
   stops?: MapStop[]
-  /** Arrêts de la ligne non desservis à cette date (affichés avec une croix) */
-  unservedStops?: MapStop[]
   className?: string
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -130,7 +102,6 @@ export default function LineMap({
 
   const stroke = color ? `#${String(color).replace(/^#/, '')}` : '#2563eb'
   const visible = hasLineGeometry(geojson) || stops.length > 0
-  const hasApprox = Boolean(geojson?.features?.some((f) => f.properties?.approx === true))
 
   useEffect(() => {
     if (!visible || !containerRef.current || mapRef.current) return
@@ -148,8 +119,6 @@ export default function LineMap({
     map.on('load', () => {
       map.addSource('line', { type: 'geojson', data: EMPTY })
       map.addSource('stops', { type: 'geojson', data: EMPTY })
-      map.addSource('unserved', { type: 'geojson', data: EMPTY })
-      map.addImage('unserved-cross', crossIcon(), { pixelRatio: 1 })
 
       map.addLayer({
         id: 'line-casing',
@@ -163,42 +132,7 @@ export default function LineMap({
         type: 'line',
         source: 'line',
         layout: { 'line-join': 'round', 'line-cap': 'round' },
-        filter: ['!=', ['get', 'approx'], true],
         paint: { 'line-color': stroke, 'line-width': 4 },
-      })
-      // Tronçons sans géométrie connue : reliés à vol d'oiseau, en pointillés
-      map.addLayer({
-        id: 'line-approx',
-        type: 'line',
-        source: 'line',
-        layout: { 'line-join': 'round', 'line-cap': 'butt' },
-        filter: ['==', ['get', 'approx'], true],
-        paint: { 'line-color': stroke, 'line-width': 3, 'line-dasharray': [2, 1.5] },
-      })
-      map.addLayer({
-        id: 'unserved',
-        type: 'symbol',
-        source: 'unserved',
-        layout: {
-          'icon-image': 'unserved-cross',
-          'icon-allow-overlap': true,
-          'icon-ignore-placement': true,
-        },
-      })
-      map.addLayer({
-        id: 'unserved-labels',
-        type: 'symbol',
-        source: 'unserved',
-        minzoom: 13,
-        layout: {
-          'text-field': ['get', 'name'],
-          'text-font': ['Noto Sans Italic'],
-          'text-size': 11,
-          'text-offset': [0, 1.1],
-          'text-anchor': 'top',
-          'text-optional': true,
-        },
-        paint: { 'text-color': '#9ca3af', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
       })
       map.addLayer({
         id: 'stops',
@@ -241,20 +175,6 @@ export default function LineMap({
         map.getCanvas().style.cursor = ''
         popup.remove()
       })
-      map.on('mouseenter', 'unserved', (e) => {
-        map.getCanvas().style.cursor = 'pointer'
-        const f = e.features?.[0]
-        if (!f || f.geometry.type !== 'Point') return
-        popup
-          .setLngLat(f.geometry.coordinates as [number, number])
-          .setText(`${String(f.properties?.name ?? '')} — non desservi ce jour`)
-          .addTo(map)
-      })
-      map.on('mouseleave', 'unserved', () => {
-        map.getCanvas().style.cursor = ''
-        popup.remove()
-      })
-
       setLoaded(true)
     })
 
@@ -273,15 +193,13 @@ export default function LineMap({
       (hasLineGeometry(geojson) ? geojson : EMPTY) as GeoJSON.FeatureCollection,
     )
     ;(map.getSource('stops') as GeoJSONSource | undefined)?.setData(stopsCollection(stops))
-    ;(map.getSource('unserved') as GeoJSONSource | undefined)?.setData(stopsCollection(unservedStops))
     map.setPaintProperty('line', 'line-color', stroke)
-    map.setPaintProperty('line-approx', 'line-color', stroke)
     map.setPaintProperty('stops', 'circle-stroke-color', stroke)
     map.setPaintProperty('stops', 'circle-color', ['case', ['get', 'terminus'], stroke, '#ffffff'])
 
-    const bounds = boundsOf(geojson, [...stops, ...unservedStops])
+    const bounds = boundsOf(geojson, stops)
     if (bounds) map.fitBounds(bounds, { padding: 32, maxZoom: 15, duration: 0 })
-  }, [geojson, stops, unservedStops, stroke, loaded])
+  }, [geojson, stops, stroke, loaded])
 
   if (!visible) {
     return (
@@ -294,28 +212,8 @@ export default function LineMap({
   }
 
   return (
-    <div className={`card overflow-hidden relative ${className}`}>
+    <div className={`card overflow-hidden ${className}`}>
       <div ref={containerRef} className="h-96 w-full z-0" />
-      {(unservedStops.length > 0 || hasApprox) && (
-        <div className="absolute left-2 top-2 z-10 rounded-md bg-white/95 shadow-sm px-2.5 py-1.5 text-[11px] text-gray-600 space-y-1">
-          <p className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full border-2 bg-white" style={{ borderColor: stroke }} />
-            Arrêt desservi
-          </p>
-          {unservedStops.length > 0 && (
-            <p className="flex items-center gap-1.5">
-              <span className="w-2.5 text-center font-bold leading-none" style={{ color: UNSERVED_COLOR }}>✕</span>
-              Non desservi ce jour ({unservedStops.length})
-            </p>
-          )}
-          {hasApprox && (
-            <p className="flex items-center gap-1.5">
-              <span className="w-2.5 border-t-2 border-dashed" style={{ borderColor: stroke }} />
-              Tracé approximatif
-            </p>
-          )}
-        </div>
-      )}
     </div>
   )
 }

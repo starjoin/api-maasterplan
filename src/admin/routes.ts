@@ -29,7 +29,7 @@ import {
 } from '../sae/commercial-modes.js'
 import { buildNavitiaLine } from '../sae/line-navitia.js'
 import { lineThermometer } from '../sae/handlers.js'
-import { lineDay, parseServiceDate } from '../sae/line-day.js'
+import { lineDay, parseServiceDate, tripGeometry } from '../sae/line-day.js'
 import {
   listVehicleMonitoring,
   vehicleMonitoringGeojson,
@@ -536,6 +536,12 @@ export async function exploreRoutes(app: FastifyInstance) {
       return reply.send(result)
     },
   )
+
+  app.get<{ Params: { tripId: string } }>('/admin/explore/trips/:tripId/geometry', async (req, reply) => {
+    const result = await tripGeometry(decodeURIComponent(req.params.tripId))
+    if (!result) return reply.status(404).send({ error: 'Course introuvable' })
+    return reply.send(result)
+  })
 
   app.get('/admin/explore/stop-types', async (_req, reply) => {
     const counts = await prisma.stop.groupBy({

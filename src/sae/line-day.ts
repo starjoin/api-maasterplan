@@ -24,6 +24,8 @@ type DayTrip = {
   directionId: number | null
   headsign: string | null
   shapeId: string | null
+  /** 0 = course du jour J, 24 = course du jour J+1 rattachée à la nuit de J */
+  offset?: number
 }
 
 type DayStopTime = {
@@ -65,6 +67,25 @@ export function todayServiceDate(): string {
 
 function isoDate(compact: string) {
   return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`
+}
+
+/**
+ * Journée d'exploitation : de 04:00 au jour J à 03:59 le lendemain. Les courses
+ * du jour J qui partent avant 04:00 appartiennent à la nuit de la veille.
+ */
+const SERVICE_DAY_START = '04:00:00'
+
+function shiftServiceDate(compact: string, days: number) {
+  const d = new Date(`${isoDate(compact)}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10).replace(/-/g, '')
+}
+
+/** Décale une heure GTFS de `hours` heures (03:10:00 + 24 → 27:10:00) */
+function shiftTime(t: string | null, hours: number): string | null {
+  if (!t || !hours) return t
+  const [h, m, s] = t.split(':')
+  return `${String(Number(h) + hours).padStart(2, '0')}:${m}:${s}`
 }
 
 /** H:MM:SS → HH:MM:SS (tri lexical correct, y compris > 24h) */
@@ -157,7 +178,7 @@ function mergeSequences(patterns: string[][]): string[] {
   return merged
 }
 
-// ─── Géométrie : tracé passant par les seuls arrêts desservis ────────────────
+// ─── Géométrie ───────────────────────────────────────────────────────────────
 
 type Projection = { dist: number; seg: number; t: number; point: number[] }
 
@@ -191,59 +212,85 @@ function projectOnPolyline(coords: number[][], lon: number, lat: number): Projec
 
 const STOP_MATCH_METERS = 80
 
-function meters(a: number[], b: number[]) {
-  const k = Math.cos((((a[1] + b[1]) / 2) * Math.PI) / 180)
-  return Math.hypot((b[0] - a[0]) * 111320 * k, (b[1] - a[1]) * 110540)
-}
+/**
+ * Parmi les variantes de la géométrie Navitia, garde celle qui passe par le plus
+ * d'arrêts donnés, rognée entre le premier et le dernier arrêt.
+ */
+function navitiaGeometryForStops(parts: number[][][], stops: Array<{ lat: number; lon: number }>) {
+  if (stops.length < 2) return null
+  let best: { coverage: number; coords: number[][]; span: number } | null = null
 
-function polylineLength(coords: number[][]) {
-  let total = 0
-  for (let i = 1; i < coords.length; i++) total += meters(coords[i - 1], coords[i])
-  return total
+  for (const part of parts) {
+    if (part.length < 2) continue
+    const projections = stops.map((s) => projectOnPolyline(part, s.lon, s.lat))
+    const matched = projections.filter((p) => p.dist <= STOP_MATCH_METERS)
+    const coverage = matched.length / stops.length
+    if (matched.length < 2) continue
+
+    const pos = (p: Projection) => p.seg + p.t
+    const ordered = [...matched].sort((a, b) => pos(a) - pos(b))
+    const start = ordered[0]
+    const end = ordered[ordered.length - 1]
+    const coords = [start.point, ...part.slice(start.seg + 1, end.seg + 1), end.point]
+    const span = pos(end) - pos(start)
+
+    if (
+      !best ||
+      coverage > best.coverage + 0.001 ||
+      (Math.abs(coverage - best.coverage) <= 0.001 && span < best.span)
+    ) {
+      best = { coverage, coords, span }
+    }
+  }
+
+  return best && best.coverage >= 0.6 ? best : null
 }
 
 /**
- * Construit le tracé du jour tronçon par tronçon : entre deux arrêts desservis
- * consécutifs, on suit la variante Navitia qui les relie (dans le bon sens et sans
- * détour excessif) ; sinon on les relie en ligne droite, marquée « approx ».
- * Le tracé passe ainsi uniquement par les arrêts desservis ce jour-là.
+ * Tracé passant par une liste d'arrêts : shape GTFS si fournie, sinon variante
+ * Navitia rognée, sinon arrêts reliés à vol d'oiseau.
  */
-function navitiaPathThroughStops(parts: number[][][], stops: Array<{ lat: number; lon: number }>) {
-  const usable = parts.filter((p) => p.length >= 2)
-  const projections = usable.map((part) => stops.map((s) => projectOnPolyline(part, s.lon, s.lat)))
-  const pos = (p: Projection) => p.seg + p.t
+async function geometryForStops(
+  shapeIds: string[],
+  navitiaParts: number[][][] | null,
+  stops: Array<{ lat: number; lon: number }>,
+  props: Record<string, unknown>,
+) {
+  const features: LineFeature[] = []
+  for (const shapeId of shapeIds.slice(0, 12)) {
+    const f = await gtfsShapeFeature(shapeId, { ...props, shape_id: shapeId })
+    if (f) features.push(f)
+  }
+  if (features.length) return { source: 'gtfs_shapes' as const, features }
 
-  const segments: Array<{ coords: number[][]; approx: boolean }> = []
-  let matched = 0
-  for (let i = 0; i < stops.length - 1; i++) {
-    const a = [stops[i].lon, stops[i].lat]
-    const b = [stops[i + 1].lon, stops[i + 1].lat]
-    const direct = meters(a, b)
-    let best: number[][] | null = null
-    let bestLength = Infinity
-    usable.forEach((part, k) => {
-      const pa = projections[k][i]
-      const pb = projections[k][i + 1]
-      if (pa.dist > STOP_MATCH_METERS || pb.dist > STOP_MATCH_METERS || pos(pb) <= pos(pa)) return
-      const coords = [pa.point, ...part.slice(pa.seg + 1, pb.seg + 1), pb.point]
-      const length = polylineLength(coords)
-      // Un tronçon bien plus long que la distance directe trahit une boucle ou une autre branche
-      if (length > direct * 3 + 400 || length >= bestLength) return
-      best = coords
-      bestLength = length
+  if (navitiaParts) {
+    const best = navitiaGeometryForStops(navitiaParts, stops)
+    if (best) {
+      features.push({
+        type: 'Feature',
+        properties: { ...props, geometry_source: 'navitia', coverage: Math.round(best.coverage * 100) / 100 },
+        geometry: { type: 'LineString', coordinates: best.coords },
+      })
+      return { source: 'navitia' as const, features }
+    }
+  }
+  if (stops.length >= 2) {
+    features.push({
+      type: 'Feature',
+      properties: { ...props, geometry_source: 'stops' },
+      geometry: { type: 'LineString', coordinates: stops.map((c) => [c.lon, c.lat]) },
     })
-    if (best) matched++
-    segments.push({ coords: best ?? [a, b], approx: !best })
+    return { source: 'stops' as const, features }
   }
+  return { source: null, features }
+}
 
-  // Fusionne les tronçons consécutifs de même nature en LineStrings
-  const merged: Array<{ coords: number[][]; approx: boolean }> = []
-  for (const seg of segments) {
-    const last = merged[merged.length - 1]
-    if (last && last.approx === seg.approx) last.coords.push(...seg.coords.slice(1))
-    else merged.push({ coords: [...seg.coords], approx: seg.approx })
-  }
-  return { segments: merged, coverage: segments.length ? matched / segments.length : 0 }
+function navitiaPartsOf(extras: string | null) {
+  const geometry = geometryFromRouteExtras(extras)
+  if (!geometry) return null
+  return geometry.type === 'LineString'
+    ? [geometry.coordinates as number[][]]
+    : (geometry.coordinates as number[][][])
 }
 
 async function gtfsShapeFeature(shapeId: string, props: Record<string, unknown>): Promise<LineFeature | null> {
@@ -286,12 +333,17 @@ export async function lineDay(routeId: string, rawDate?: string) {
     allTrips.map((t) => t.serviceId),
     date,
   )
-  const trips = allTrips.filter((t) => active.has(t.serviceId))
+  // Courses du lendemain avant 04:00 : elles terminent la journée d'exploitation
+  const next = await resolveServicesForDate(allTrips.map((t) => t.serviceId), shiftServiceDate(date, 1))
+  const candidates: DayTrip[] = [
+    ...allTrips.filter((t) => active.has(t.serviceId)).map((t) => ({ ...t, offset: 0 })),
+    ...allTrips.filter((t) => next.active.has(t.serviceId)).map((t) => ({ ...t, offset: 24 })),
+  ]
   const unresolvedTrips = allTrips.filter((t) => unresolved.has(t.serviceId)).length
 
   // Horaires des courses du jour (par paquets pour rester sous la limite SQLite)
   const stopTimes: DayStopTime[] = []
-  const tripIds = trips.map((t) => t.tripId)
+  const tripIds = [...new Set(candidates.map((t) => t.tripId))]
   for (let i = 0; i < tripIds.length; i += 500) {
     stopTimes.push(
       ...(await prisma.stopTime.findMany({
@@ -316,36 +368,21 @@ export async function lineDay(routeId: string, rawDate?: string) {
     byTrip.get(st.tripId)!.push(st)
   }
 
+  const firstServed = (tripId: string) => {
+    const st = (byTrip.get(tripId) ?? []).find((x) => !notServed(x))
+    return st ? normTime(st.departureTime || st.arrivalTime) : null
+  }
+  const trips = candidates.filter((t) => {
+    const first = firstServed(t.tripId)
+    if (!first) return false
+    return t.offset ? first < SERVICE_DAY_START : first >= SERVICE_DAY_START
+  })
+
   const stopIds = [...new Set(stopTimes.map((st) => st.stopId))]
   const stops = stopIds.length ? await prisma.stop.findMany({ where: { stopId: { in: stopIds } } }) : []
   const stopMap = new Map(stops.map((s) => [s.stopId, s]))
 
-  const geometry = geometryFromRouteExtras(route.extras)
-  const navitiaParts: number[][][] | null = geometry
-    ? geometry.type === 'LineString'
-      ? [geometry.coordinates as number[][]]
-      : (geometry.coordinates as number[][][])
-    : null
-
-  // Arrêts de référence de chaque sens : tous ceux desservis par au moins une course, tous jours confondus
-  const referenceRows = await prisma.$queryRaw<Array<{ directionId: number | null; stopId: string }>>`
-    SELECT t.directionId AS directionId, st.stopId AS stopId
-    FROM StopTime st JOIN Trip t ON t.tripId = st.tripId
-    WHERE t.routeId = ${routeId} AND NOT (COALESCE(st.pickupType, 0) = 1 AND COALESCE(st.dropOffType, 0) = 1)
-    GROUP BY t.directionId, st.stopId`
-  const referenceStops = new Map<number | null, string[]>()
-  for (const row of referenceRows) {
-    const key = row.directionId == null ? null : Number(row.directionId)
-    if (!referenceStops.has(key)) referenceStops.set(key, [])
-    referenceStops.get(key)!.push(row.stopId)
-  }
-  const missingIds = [...new Set(referenceRows.map((r) => r.stopId))].filter((id) => !stopMap.has(id))
-  const referenceStopMap = new Map(stopMap)
-  for (let i = 0; i < missingIds.length; i += 500) {
-    for (const st of await prisma.stop.findMany({ where: { stopId: { in: missingIds.slice(i, i + 500) } } })) {
-      referenceStopMap.set(st.stopId, st)
-    }
-  }
+  const navitiaParts = navitiaPartsOf(route.extras)
 
   const byDir = new Map<number | null, DayTrip[]>()
   for (const t of trips) {
@@ -373,7 +410,7 @@ export async function lineDay(routeId: string, rawDate?: string) {
         const times: Array<string | null> = new Array(sequence.length).fill(null)
         for (const st of served(t)) {
           const i = index.get(st.stopId)
-          if (i !== undefined && times[i] === null) times[i] = normTime(st.departureTime || st.arrivalTime)
+          if (i !== undefined && times[i] === null) times[i] = shiftTime(normTime(st.departureTime || st.arrivalTime), t.offset ?? 0)
         }
         const first = times.find((x) => x !== null) ?? null
         return { trip_id: t.tripId, headsign: t.headsign, shape_id: t.shapeId, first, times }
@@ -394,42 +431,14 @@ export async function lineDay(routeId: string, rawDate?: string) {
       }
     })
 
-    // Tracé : shapes GTFS des courses du jour, sinon variantes Navitia entre arrêts desservis
-    const features: LineFeature[] = []
-    let geometrySource: 'gtfs_shapes' | 'navitia' | 'stops' | null = null
-    const shapeIds = [...new Set(tripRows.map((r) => r.shape_id).filter((x): x is string => !!x))]
-    for (const shapeId of shapeIds.slice(0, 12)) {
-      const f = await gtfsShapeFeature(shapeId, { shape_id: shapeId, direction_id: dir })
-      if (f) features.push(f)
-    }
-    if (features.length) geometrySource = 'gtfs_shapes'
-
+    // Tracé : shapes GTFS des courses du jour, sinon variante Navitia rognée
     const stopCoords = stopPoints
       .map((sp) => sp.stop_point.coord)
       .filter((c): c is { lat: number; lon: number } => !!c)
-
-    if (!features.length && stopCoords.length >= 2) {
-      // Variantes Navitia suivies d'arrêt desservi en arrêt desservi, sinon vol d'oiseau
-      const { segments, coverage } = navitiaParts
-        ? navitiaPathThroughStops(navitiaParts, stopCoords)
-        : { segments: [{ coords: stopCoords.map((c) => [c.lon, c.lat]), approx: true }], coverage: 0 }
-      for (const seg of segments) {
-        features.push({
-          type: 'Feature',
-          properties: { direction_id: dir, geometry_source: seg.approx ? 'stops' : 'navitia', approx: seg.approx },
-          geometry: { type: 'LineString', coordinates: seg.coords },
-        })
-      }
-      geometrySource = coverage >= 0.5 ? 'navitia' : 'stops'
-    }
-
-    // Arrêts de la ligne dans ce sens, desservis d'autres jours mais pas celui-ci
-    const servedIds = new Set(sequence)
-    const unservedStops = (referenceStops.get(dir) ?? [])
-      .filter((id) => !servedIds.has(id))
-      .map((id) => referenceStopMap.get(id))
-      .filter((st): st is NonNullable<typeof st> => !!st && st.lat != null && st.lon != null)
-      .map((st) => formatStop(st))
+    const shapeIds = [...new Set(tripRows.map((r) => r.shape_id).filter((x): x is string => !!x))]
+    const { source: geometrySource, features } = await geometryForStops(shapeIds, navitiaParts, stopCoords, {
+      direction_id: dir,
+    })
 
     const headsigns = [...new Set(tripRows.map((r) => r.headsign).filter((h): h is string => !!h))]
     const last = stopPoints[stopPoints.length - 1]?.stop_point
@@ -442,7 +451,6 @@ export async function lineDay(routeId: string, rawDate?: string) {
       first_departure: tripRows[0]?.first ?? null,
       last_departure: tripRows[tripRows.length - 1]?.first ?? null,
       stop_points: stopPoints,
-      unserved_stops: unservedStops,
       trips: tripRows.map(({ shape_id: _shape, ...rest }) => rest),
       geometry_source: geometrySource,
       geojson: { type: 'FeatureCollection' as const, features },
@@ -453,6 +461,7 @@ export async function lineDay(routeId: string, rawDate?: string) {
     line_id: route.routeId,
     color: hexColor(route.color),
     date: isoDate(date),
+    service_day: { start: `${isoDate(date)}T04:00:00`, end: `${isoDate(shiftServiceDate(date, 1))}T03:59:59` },
     service_range: {
       start: range.min ? isoDate(range.min) : null,
       end: range.max ? isoDate(range.max) : null,
@@ -461,5 +470,38 @@ export async function lineDay(routeId: string, rawDate?: string) {
     total_trips: allTrips.length,
     unresolved_trips: unresolvedTrips,
     directions,
+  }
+}
+
+/** Tracé d'une seule course, limité aux arrêts qu'elle dessert. */
+export async function tripGeometry(tripId: string) {
+  const trip = await prisma.trip.findUnique({ where: { tripId } })
+  if (!trip) return null
+  const route = await prisma.route.findUnique({ where: { routeId: trip.routeId } })
+
+  const stopTimes = await prisma.stopTime.findMany({
+    where: { tripId },
+    orderBy: { stopSequence: 'asc' },
+    select: { stopId: true, pickupType: true, dropOffType: true },
+  })
+  const servedIds = stopTimes.filter((st) => !(st.pickupType === 1 && st.dropOffType === 1)).map((st) => st.stopId)
+  const stops = await prisma.stop.findMany({ where: { stopId: { in: servedIds } } })
+  const byId = new Map(stops.map((s) => [s.stopId, s]))
+  const coords = servedIds
+    .map((id) => byId.get(id))
+    .filter((s): s is NonNullable<typeof s> => !!s && s.lat != null && s.lon != null)
+    .map((s) => ({ lat: s.lat!, lon: s.lon! }))
+
+  const { source, features } = await geometryForStops(
+    trip.shapeId ? [trip.shapeId] : [],
+    navitiaPartsOf(route?.extras ?? null),
+    coords,
+    { trip_id: tripId, direction_id: trip.directionId },
+  )
+  return {
+    trip_id: tripId,
+    direction_id: trip.directionId,
+    geometry_source: source,
+    geojson: { type: 'FeatureCollection' as const, features },
   }
 }

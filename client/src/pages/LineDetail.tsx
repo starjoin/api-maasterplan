@@ -1,7 +1,7 @@
-import { lazy, Suspense, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { api, type LineDayDirection } from '../lib/api'
+import { api, type LineDayDirection, type LineDayTrip } from '../lib/api'
 import type { MapStop } from '../components/LineMap'
 
 // MapLibre pèse lourd : la carte est chargée à la demande.
@@ -18,6 +18,7 @@ import {
   Loader2,
   MapPin,
   Table2,
+  X,
 } from 'lucide-react'
 
 /** HH:MM:SS (éventuellement > 24h) → HH:MM, avec J+1 si besoin */
@@ -93,9 +94,21 @@ function LinePicto({
   )
 }
 
-function Thermometer({ direction, color }: { direction: LineDayDirection; color: string }) {
+function Thermometer({
+  direction,
+  color,
+  trip,
+}: {
+  direction: LineDayDirection
+  color: string
+  /** Course sélectionnée : seuls ses arrêts et ses horaires sont affichés */
+  trip?: LineDayTrip | null
+}) {
   const [open, setOpen] = useState<string | null>(null)
-  const stops = direction.stop_points
+  const stops = trip
+    ? direction.stop_points.filter((_, i) => trip.times[i] !== null)
+    : direction.stop_points
+  const tripTime = (sp: (typeof stops)[number]) => trip?.times[direction.stop_points.indexOf(sp)] ?? null
 
   return (
     <div className="card overflow-hidden">
@@ -123,8 +136,8 @@ function Thermometer({ direction, color }: { direction: LineDayDirection; color:
                 <button
                   type="button"
                   className="flex-1 min-w-0 py-3 text-left flex items-center gap-4"
-                  onClick={() => setOpen(expanded ? null : key)}
-                  aria-expanded={expanded}
+                  onClick={() => !trip && setOpen(expanded ? null : key)}
+                  aria-expanded={trip ? undefined : expanded}
                 >
                   <div className="flex-1 min-w-0">
                     <p className={`text-sm break-words ${isFirst || isLast ? 'font-semibold' : 'font-medium'}`}>
@@ -132,15 +145,23 @@ function Thermometer({ direction, color }: { direction: LineDayDirection; color:
                     </p>
                     <p className="text-xs text-gray-400 font-mono truncate">{stopId}</p>
                   </div>
-                  <div className="text-right text-xs text-gray-500 tabular-nums flex-shrink-0">
-                    <p>
-                      {formatTime(sp.first_departure)} → {formatTime(sp.last_departure)}
+                  {trip ? (
+                    <p className="text-sm font-semibold tabular-nums text-gray-700 flex-shrink-0">
+                      {formatTime(tripTime(sp))}
                     </p>
-                    <p className="text-gray-400">{sp.passages} passage{sp.passages > 1 ? 's' : ''}</p>
-                  </div>
-                  <ChevronDown
-                    className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
-                  />
+                  ) : (
+                    <>
+                      <div className="text-right text-xs text-gray-500 tabular-nums flex-shrink-0">
+                        <p>
+                          {formatTime(sp.first_departure)} → {formatTime(sp.last_departure)}
+                        </p>
+                        <p className="text-gray-400">{sp.passages} passage{sp.passages > 1 ? 's' : ''}</p>
+                      </div>
+                      <ChevronDown
+                        className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                      />
+                    </>
+                  )}
                 </button>
                 <Link
                   to={`/explorer/stops/${encodeURIComponent(stopId)}`}
@@ -150,7 +171,7 @@ function Thermometer({ direction, color }: { direction: LineDayDirection; color:
                   <ExternalLink className="w-4 h-4" />
                 </Link>
               </div>
-              {expanded && (
+              {expanded && !trip && (
                 <div className="pl-14 pr-5 pb-4 flex flex-wrap gap-1.5">
                   {sp.departures.map((t, i) => (
                     <span key={i} className="badge bg-gray-100 text-gray-700 tabular-nums">
@@ -167,7 +188,15 @@ function Thermometer({ direction, color }: { direction: LineDayDirection; color:
   )
 }
 
-function Timetable({ direction }: { direction: LineDayDirection }) {
+function Timetable({
+  direction,
+  selectedTripId,
+  onSelectTrip,
+}: {
+  direction: LineDayDirection
+  selectedTripId: string | null
+  onSelectTrip: (tripId: string | null) => void
+}) {
   const { stop_points: stops, trips } = direction
   return (
     <div className="card overflow-auto max-h-[32rem]">
@@ -177,15 +206,24 @@ function Timetable({ direction }: { direction: LineDayDirection }) {
             <th className="sticky top-0 left-0 z-20 bg-white border-b border-r border-gray-200 px-3 py-2 text-left font-semibold text-gray-600 min-w-[14rem]">
               Arrêt
             </th>
-            {trips.map((t, i) => (
-              <th
-                key={t.trip_id}
-                className="sticky top-0 z-10 bg-white border-b border-gray-200 px-2 py-2 font-medium text-gray-400"
-                title={`${t.trip_id}${t.headsign ? ` — ${t.headsign}` : ''}`}
-              >
-                {i + 1}
-              </th>
-            ))}
+            {trips.map((t, i) => {
+              const selected = t.trip_id === selectedTripId
+              return (
+                <th key={t.trip_id} className="sticky top-0 z-10 bg-white border-b border-gray-200 px-1 py-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onSelectTrip(selected ? null : t.trip_id)}
+                    className={`min-w-[2.25rem] rounded-md px-1.5 py-0.5 font-medium transition-colors ${
+                      selected ? 'bg-primary-600 text-white' : 'text-gray-400 hover:bg-primary-50 hover:text-primary-700'
+                    }`}
+                    title={`Voir la course n°${i + 1} — ${t.trip_id}${t.headsign ? ` — ${t.headsign}` : ''}`}
+                    aria-pressed={selected}
+                  >
+                    {i + 1}
+                  </button>
+                </th>
+              )
+            })}
           </tr>
         </thead>
         <tbody>
@@ -197,7 +235,9 @@ function Timetable({ direction }: { direction: LineDayDirection }) {
               {trips.map((t) => (
                 <td
                   key={t.trip_id}
-                  className={`border-b border-gray-100 px-2 py-1.5 text-center ${t.times[row] ? 'text-gray-700' : 'text-gray-300'}`}
+                  className={`border-b border-gray-100 px-2 py-1.5 text-center ${t.times[row] ? 'text-gray-700' : 'text-gray-300'} ${
+                    t.trip_id === selectedTripId ? 'bg-primary-50 font-semibold' : ''
+                  }`}
                 >
                   {t.times[row] ? formatTime(t.times[row], false) : '|'}
                 </td>
@@ -218,6 +258,8 @@ export default function LineDetail() {
   const date = isIsoDate(dateParam) ? dateParam : todayParis()
   const [dirIndex, setDirIndex] = useState(0)
   const [view, setView] = useState<'thermometer' | 'timetable'>('thermometer')
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
+  const mapSectionRef = useRef<HTMLDivElement>(null)
 
   const setDate = (next: string) => {
     if (!isIsoDate(next)) return
@@ -253,27 +295,50 @@ export default function LineDetail() {
   const activeIndex = Math.min(dirIndex, Math.max(directions.length - 1, 0))
   const activeDir = directions[activeIndex]
 
+  // Une course n'a de sens que pour le jour et le sens où elle a été choisie
+  useEffect(() => setSelectedTripId(null), [date, activeIndex, realRouteId])
+
+  const tripIndex = activeDir ? activeDir.trips.findIndex((t) => t.trip_id === selectedTripId) : -1
+  const selectedTrip = tripIndex >= 0 ? activeDir!.trips[tripIndex] : null
+
+  const { data: tripGeo, isFetching: tripGeoFetching } = useQuery({
+    queryKey: ['explore-trip-geometry', selectedTrip?.trip_id],
+    queryFn: () => api.explore.tripGeometry(selectedTrip!.trip_id),
+    enabled: Boolean(selectedTrip),
+  })
+
+  const selectTrip = (tripId: string | null) => {
+    setSelectedTripId(tripId)
+    if (tripId) mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   const mapStops: MapStop[] = useMemo(() => {
     if (!activeDir) return []
-    const last = activeDir.stop_points.length - 1
-    return activeDir.stop_points
-      .filter((sp) => sp.stop_point.coord)
-      .map((sp) => ({
-        id: sp.stop_point.id,
-        name: sp.stop_point.name,
-        lat: sp.stop_point.coord!.lat,
-        lon: sp.stop_point.coord!.lon,
-        terminus: sp.order === 0 || sp.order === last,
-      }))
-  }, [activeDir])
+    const served = activeDir.stop_points.filter(
+      (sp, i) => sp.stop_point.coord && (!selectedTrip || selectedTrip.times[i] !== null),
+    )
+    return served.map((sp, i) => ({
+      id: sp.stop_point.id,
+      name: sp.stop_point.name,
+      lat: sp.stop_point.coord!.lat,
+      lon: sp.stop_point.coord!.lon,
+      terminus: i === 0 || i === served.length - 1,
+    }))
+  }, [activeDir, selectedTrip])
 
-  const unservedMapStops: MapStop[] = useMemo(
-    () =>
-      (activeDir?.unserved_stops ?? [])
-        .filter((s) => s.coord)
-        .map((s) => ({ id: s.id, name: s.name, lat: s.coord!.lat, lon: s.coord!.lon })),
-    [activeDir],
-  )
+  const tripSummary = useMemo(() => {
+    if (!activeDir || !selectedTrip) return null
+    const idx = selectedTrip.times.map((t, i) => (t ? i : -1)).filter((i) => i >= 0)
+    const first = idx[0]
+    const last = idx[idx.length - 1]
+    return {
+      count: idx.length,
+      from: activeDir.stop_points[first]?.stop_point.name,
+      to: activeDir.stop_points[last]?.stop_point.name,
+      departure: selectedTrip.times[first],
+      arrival: selectedTrip.times[last],
+    }
+  }, [activeDir, selectedTrip])
 
   if (isLoading) {
     return (
@@ -360,6 +425,7 @@ export default function LineDetail() {
           {formatLongDate(date)}
           {dayFetching && <Loader2 className="inline w-3.5 h-3.5 ml-2 animate-spin text-primary-500" />}
         </p>
+        <p className="text-xs text-gray-400">Journée d’exploitation de 4h00 à 3h59 le lendemain</p>
         {range?.start && range?.end && (
           <p className="text-xs text-gray-400 ml-auto">
             Données du {new Date(`${range.start}T12:00:00Z`).toLocaleDateString('fr-FR')} au{' '}
@@ -430,15 +496,33 @@ export default function LineDetail() {
                 </div>
               </div>
 
-              <div className="mb-8">
+              <div className="mb-8 scroll-mt-6" ref={mapSectionRef}>
                 <h2 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
                   <MapPin className="w-4 h-4" /> Itinéraire
-                  {activeDir.geometry_source === 'stops' && (
+                  {(selectedTrip ? tripGeo?.geometry_source : activeDir.geometry_source) === 'stops' && (
                     <span className="text-xs font-normal text-gray-400">(tracé approximatif entre arrêts)</span>
                   )}
+                  {selectedTrip && tripGeoFetching && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary-500" />}
                 </h2>
+                {selectedTrip && tripSummary && (
+                  <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg bg-primary-50 px-4 py-2.5 text-sm text-primary-900">
+                    <span className="font-semibold">Course n°{tripIndex + 1}</span>
+                    <span className="tabular-nums">
+                      {formatTime(tripSummary.departure)} {tripSummary.from} → {formatTime(tripSummary.arrival)} {tripSummary.to}
+                    </span>
+                    <span className="text-primary-700">{tripSummary.count} arrêts desservis</span>
+                    <span className="text-xs font-mono text-primary-700/70 truncate">{selectedTrip.trip_id}</span>
+                    <button type="button" className="ml-auto btn-ghost text-xs py-1" onClick={() => setSelectedTripId(null)}>
+                      <X className="w-3.5 h-3.5" /> Toute la journée
+                    </button>
+                  </div>
+                )}
                 <Suspense fallback={<div className="card h-96 flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-primary-500" /></div>}>
-                  <LineMap geojson={activeDir.geojson} color={color} stops={mapStops} unservedStops={unservedMapStops} />
+                  <LineMap
+                    geojson={selectedTrip ? (tripGeo?.trip_id === selectedTrip.trip_id ? tripGeo.geojson : null) : activeDir.geojson}
+                    color={color}
+                    stops={mapStops}
+                  />
                 </Suspense>
               </div>
 
@@ -468,10 +552,23 @@ export default function LineDetail() {
                       aria-label="Date de desserte"
                     />
                     <span className="tabular-nums">
-                      {activeDir.stop_points.length} arrêt{activeDir.stop_points.length > 1 ? 's' : ''}
+                      {mapStops.length} arrêt{mapStops.length > 1 ? 's' : ''}
                     </span>
                     {dayFetching && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary-500" />}
                   </label>
+                  <select
+                    className="input py-1 px-2 text-xs w-auto"
+                    value={selectedTripId ?? ''}
+                    onChange={(e) => selectTrip(e.target.value || null)}
+                    aria-label="Course"
+                  >
+                    <option value="">Toute la journée</option>
+                    {activeDir.trips.map((t, i) => (
+                      <option key={t.trip_id} value={t.trip_id}>
+                        Course n°{i + 1} — {formatTime(t.first)}
+                      </option>
+                    ))}
+                  </select>
                   <div className="flex gap-1">
                     <button
                       type="button"
@@ -494,9 +591,9 @@ export default function LineDetail() {
                   </div>
                 </div>
                 {view === 'thermometer' ? (
-                  <Thermometer direction={activeDir} color={stroke} />
+                  <Thermometer direction={activeDir} color={stroke} trip={selectedTrip} />
                 ) : (
-                  <Timetable direction={activeDir} />
+                  <Timetable direction={activeDir} selectedTripId={selectedTripId} onSelectTrip={selectTrip} />
                 )}
               </div>
             </>

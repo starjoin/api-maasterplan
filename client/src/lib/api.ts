@@ -32,6 +32,14 @@ export interface LineDayStopPoint {
   departures: string[]
 }
 
+export interface LineDayTrip {
+  trip_id: string
+  headsign: string | null
+  first: string | null
+  /** Horaires alignés sur stop_points (null = arrêt non desservi par cette course) */
+  times: Array<string | null>
+}
+
 export interface LineDayDirection {
   direction_id: number | null
   headsign: string | null
@@ -40,9 +48,7 @@ export interface LineDayDirection {
   first_departure: string | null
   last_departure: string | null
   stop_points: LineDayStopPoint[]
-  /** Arrêts du sens non desservis à cette date */
-  unserved_stops: Array<LineDayStopPoint['stop_point']>
-  trips: Array<{ trip_id: string; headsign: string | null; first: string | null; times: Array<string | null> }>
+  trips: LineDayTrip[]
   geometry_source: 'gtfs_shapes' | 'navitia' | 'stops' | null
   geojson: {
     type: 'FeatureCollection'
@@ -58,6 +64,8 @@ export interface LineDay {
   line_id: string
   color: string | null
   date: string
+  /** Journée d'exploitation : 04:00 le jour J → 03:59 le lendemain */
+  service_day: { start: string; end: string }
   service_range: { start: string | null; end: string | null }
   trip_count: number
   total_trips: number
@@ -406,6 +414,13 @@ export const api = {
       request<LineDay>(
         `/admin/explore/routes/${encodeURIComponent(id)}/day?date=${encodeURIComponent(date)}`,
       ),
+    tripGeometry: (tripId: string) =>
+      request<{
+        trip_id: string
+        direction_id: number | null
+        geometry_source: 'gtfs_shapes' | 'navitia' | 'stops' | null
+        geojson: LineDayDirection['geojson']
+      }>(`/admin/explore/trips/${encodeURIComponent(tripId)}/geometry`),
     stopTypes: () =>
       request<{
         types: Array<{ locationType: number; label: string; count: number }>
