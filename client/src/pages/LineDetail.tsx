@@ -556,6 +556,20 @@ export default function LineDetail() {
                     </span>
                     {dayFetching && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary-500" />}
                   </label>
+                  <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="btn-secondary py-1 px-1.5"
+                    disabled={tripIndex === 0}
+                    onClick={() => {
+                      const trips = activeDir.trips
+                      setSelectedTripId(trips[tripIndex < 0 ? trips.length - 1 : tripIndex - 1]?.trip_id ?? null)
+                    }}
+                    title="Course précédente"
+                    aria-label="Course précédente"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
                   <select
                     className="input py-1 px-2 text-xs w-auto"
                     value={selectedTripId ?? ''}
@@ -569,6 +583,17 @@ export default function LineDetail() {
                       </option>
                     ))}
                   </select>
+                  <button
+                    type="button"
+                    className="btn-secondary py-1 px-1.5"
+                    disabled={tripIndex === activeDir.trips.length - 1}
+                    onClick={() => setSelectedTripId(activeDir.trips[tripIndex + 1]?.trip_id ?? null)}
+                    title="Course suivante"
+                    aria-label="Course suivante"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                  </div>
                   <div className="flex gap-1">
                     <button
                       type="button"
