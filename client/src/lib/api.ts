@@ -17,6 +17,54 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json()
 }
 
+export interface LineDayStopPoint {
+  order: number
+  stop_point: {
+    id: string
+    name: string
+    label?: string
+    code?: string | null
+    coord: { lat: number; lon: number } | null
+  }
+  passages: number
+  first_departure: string | null
+  last_departure: string | null
+  departures: string[]
+}
+
+export interface LineDayDirection {
+  direction_id: number | null
+  headsign: string | null
+  headsigns: string[]
+  trip_count: number
+  first_departure: string | null
+  last_departure: string | null
+  stop_points: LineDayStopPoint[]
+  /** Arrêts du sens non desservis à cette date */
+  unserved_stops: Array<LineDayStopPoint['stop_point']>
+  trips: Array<{ trip_id: string; headsign: string | null; first: string | null; times: Array<string | null> }>
+  geometry_source: 'gtfs_shapes' | 'navitia' | 'stops' | null
+  geojson: {
+    type: 'FeatureCollection'
+    features: Array<{
+      type: 'Feature'
+      properties: Record<string, unknown>
+      geometry: { type: 'LineString'; coordinates: number[][] }
+    }>
+  }
+}
+
+export interface LineDay {
+  line_id: string
+  color: string | null
+  date: string
+  service_range: { start: string | null; end: string | null }
+  trip_count: number
+  total_trips: number
+  unresolved_trips: number
+  directions: LineDayDirection[]
+}
+
 export interface ImportJob {
   id: string
   status: 'PENDING' | 'DOWNLOADING' | 'PARSING' | 'IMPORTING' | 'VALIDATING' | 'COMPLETED' | 'FAILED' | 'SKIPPED'
@@ -354,6 +402,10 @@ export const api = {
         } | null
         pictoUrl: string | null
       }>(`/admin/explore/routes/${encodeURIComponent(id)}`),
+    routeDay: (id: string, date: string) =>
+      request<LineDay>(
+        `/admin/explore/routes/${encodeURIComponent(id)}/day?date=${encodeURIComponent(date)}`,
+      ),
     stopTypes: () =>
       request<{
         types: Array<{ locationType: number; label: string; count: number }>

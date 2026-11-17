@@ -189,6 +189,9 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
       <n:ServiceJourneyPattern id="pattern"><n:RouteRef ref="route"/><n:pointsInSequence><n:StopPointInJourneyPattern id="p1" order="1"><n:ScheduledStopPointRef ref="ssp"/></n:StopPointInJourneyPattern></n:pointsInSequence></n:ServiceJourneyPattern>
       <n:DayType id="day"><n:properties><n:PropertyOfDay><n:DaysOfWeek>Monday</n:DaysOfWeek></n:PropertyOfDay></n:properties></n:DayType>
       <n:DayTypeAssignment id="date"><n:DayTypeRef ref="day"/><n:Date>2026-09-07</n:Date></n:DayTypeAssignment>
+      <n:UicOperatingPeriod id="period"><n:FromDate>2026-09-07T00:00:00</n:FromDate><n:ToDate>2026-09-15T00:00:00</n:ToDate><n:ValidDayBits>100000011</n:ValidDayBits></n:UicOperatingPeriod>
+      <n:DayTypeAssignment id="off"><n:DayTypeRef ref="day"/><n:Date>2026-09-14</n:Date><n:isAvailable>false</n:isAvailable></n:DayTypeAssignment>
+      <n:DayTypeAssignment id="season"><n:DayTypeRef ref="day"/><n:OperatingPeriodRef ref="period"/></n:DayTypeAssignment>
       <n:ServiceJourney id="journey"><n:ServiceJourneyPatternRef ref="pattern"/><n:dayTypes><n:DayTypeRef ref="day"/></n:dayTypes><n:passingTimes><n:TimetabledPassingTime id="time"><n:StopPointInJourneyPatternRef ref="p1"/><n:DepartureTime>01:05:00</n:DepartureTime><n:DepartureDayOffset>1</n:DepartureDayOffset></n:TimetabledPassingTime></n:passingTimes></n:ServiceJourney>
       <n:Parking id="parking"><n:Name>Park</n:Name><n:Capacity>100</n:Capacity></n:Parking>
       </n:members></n:CompositeFrame></n:PublicationDelivery>`
@@ -201,7 +204,11 @@ test('isolated imports, availability, fidelity, failures and persisted publicati
       assert.equal(netexRoute.shortName,'001')
       assert.deepEqual(JSON.parse(netexRoute.extras).navitia.geojson,navitiaGeometry)
       assert.equal((await c.stopTime.findFirst()).departureTime,'25:05:00')
-      assert.equal((await c.calendarDate.findFirst()).date,'20260907')
+      // Période UIC (ValidDayBits) projetée, puis corrigée par la date exclue
+      assert.deepEqual(
+        (await c.calendarDate.findMany({orderBy:{date:'asc'}})).map(d=>[d.date,d.exceptionType]),
+        [['20260907',1],['20260914',2],['20260915',1]],
+      )
       assert.equal(await c.calendar.count(),0)
       assert.equal(await c.sourceRecord.count({where:{kind:'Parking'}}),1)
     })

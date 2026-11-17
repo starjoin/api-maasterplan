@@ -29,6 +29,7 @@ import {
 } from '../sae/commercial-modes.js'
 import { buildNavitiaLine } from '../sae/line-navitia.js'
 import { lineThermometer } from '../sae/handlers.js'
+import { lineDay, parseServiceDate } from '../sae/line-day.js'
 import {
   listVehicleMonitoring,
   vehicleMonitoringGeojson,
@@ -522,6 +523,19 @@ export async function exploreRoutes(app: FastifyInstance) {
       pictoUrl: pictoUrl(route.shortName),
     })
   })
+
+  app.get<{ Params: { id: string }; Querystring: { date?: string } }>(
+    '/admin/explore/routes/:id/day',
+    async (req, reply) => {
+      const id = decodeURIComponent(req.params.id)
+      if (req.query.date && !parseServiceDate(req.query.date)) {
+        return reply.status(400).send({ error: 'Date invalide (attendu : AAAA-MM-JJ)' })
+      }
+      const result = await lineDay(id, req.query.date)
+      if (!result) return reply.status(404).send({ error: 'Ligne introuvable' })
+      return reply.send(result)
+    },
+  )
 
   app.get('/admin/explore/stop-types', async (_req, reply) => {
     const counts = await prisma.stop.groupBy({

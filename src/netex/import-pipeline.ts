@@ -245,21 +245,38 @@ async function projectCalendar(serviceId: string, dayTypes: string[], stats: Imp
     const supportedWeek = tokens.length > 0 && tokens.every(token => token in days) && properties.every(p => Object.keys(p).every(k => k === 'DaysOfWeek' || k.startsWith('@_')))
     const weekdays = new Set(supportedWeek ? tokens.flatMap(token => days[token]) : [])
     const assignments = await prisma.netexReference.findMany({ where: { key: { startsWith: `day:${dayType}:` } } })
-    for (const assignment of assignments) {
-      const node = JSON.parse(assignment.value)
+    const parsed = assignments.map(a => JSON.parse(a.value))
+    // Les périodes d'abord, puis les dates ponctuelles qui les corrigent (ajouts / suppressions).
+    for (const node of parsed) {
+      if (!ref(node.OperatingPeriodRef)) continue
       const available = text(node.isAvailable) !== 'false' && text(node.IsAvailable) !== 'false'
-      const operatingDay = await lookup('OperatingDay', ref(node.OperatingDayRef))
-      const single = dateString(text(node.Date) ?? text(operatingDay?.CalendarDate))
-      if (single) { dates.set(single, available ? 1 : 2); continue }
-      const period = await lookup('OperatingPeriod', ref(node.OperatingPeriodRef))
+      const periodRef = ref(node.OperatingPeriodRef)
+      // Les périodes UIC (avec ValidDayBits) sont rangées sous leur nom d'élément.
+      const period = await lookup('OperatingPeriod', periodRef) ?? await lookup('UicOperatingPeriod', periodRef)
       const from = text(period?.FromDate); const to = text(period?.ToDate)
-      if (!from || !to || !weekdays.size) continue
+      if (!from || !to) continue
       const start = new Date(from.slice(0,10) + 'T00:00:00Z'); const end = new Date(to.slice(0,10) + 'T00:00:00Z')
       if (!Number.isFinite(+start) || !Number.isFinite(+end) || +end - +start > 3660 * 86400000) throw new Error(`Période NeTEx invalide : ${dayType}`)
+      const bits = text(period?.ValidDayBits)
+      if (bits && /^[01]+$/.test(bits)) {
+        // Un bit par jour à partir de FromDate : il intègre déjà jours de semaine et exceptions.
+        for (let i = 0; i < bits.length && +start + i * 86400000 <= +end; i++) {
+          if (bits[i] === '1') dates.set(dateString(new Date(+start + i * 86400000).toISOString())!, available ? 1 : 2)
+        }
+        continue
+      }
+      if (!weekdays.size) continue
       for (let date = +start; date <= +end; date += 86400000) {
         const d = new Date(date)
         if (weekdays.has(d.getUTCDay())) dates.set(dateString(d.toISOString())!, available ? 1 : 2)
       }
+    }
+    for (const node of parsed) {
+      if (ref(node.OperatingPeriodRef)) continue
+      const available = text(node.isAvailable) !== 'false' && text(node.IsAvailable) !== 'false'
+      const operatingDay = await lookup('OperatingDay', ref(node.OperatingDayRef))
+      const single = dateString(text(node.Date) ?? text(operatingDay?.CalendarDate))
+      if (single) dates.set(single, available ? 1 : 2)
     }
   }
   const rows = [...dates].map(([date, exceptionType]) => ({ serviceId, date, exceptionType }))
